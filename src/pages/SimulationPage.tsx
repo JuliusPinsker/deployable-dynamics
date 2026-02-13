@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, type SimulationParams } from '@/lib/physics/types';
 import { createInitialState, stepSimulation } from '@/lib/physics/engine';
 import { Play, RotateCcw, Pause } from 'lucide-react';
+import ThemeToggle from '@/components/ui/theme-toggle';
 
 export default function SimulationPage() {
   const [searchParams] = useSearchParams();
@@ -89,11 +90,14 @@ export default function SimulationPage() {
         <a href="/" className="font-semibold text-lg tracking-tight">
           <span className="text-primary">CubeSat</span> Deploy Sim
         </a>
-        <nav className="flex gap-4 text-sm text-muted-foreground">
-          <a href="/" className="hover:text-foreground transition-colors">Overview</a>
-          <a href="/simulate" className="text-foreground">Simulation</a>
-          <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
-        </nav>
+        <div className="flex items-center gap-4">
+          <nav className="flex gap-4 text-sm text-muted-foreground">
+            <a href="/" className="hover:text-foreground transition-colors">Overview</a>
+            <a href="/simulate" className="text-foreground">Simulation</a>
+            <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
+          </nav>
+          <ThemeToggle />
+        </div>
       </header>
 
       <div className="flex h-[calc(100vh-53px)]">

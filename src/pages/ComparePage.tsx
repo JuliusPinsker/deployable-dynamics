@@ -10,6 +10,7 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, BarChart, Bar, ResponsiveContainer } from 'recharts';
+import ThemeToggle from '@/components/ui/theme-toggle';
 
 const chartConfig: ChartConfig = {
   'long-edge': { label: 'Long-edge', color: 'hsl(210, 100%, 55%)' },
@@ -121,11 +122,14 @@ export default function ComparePage() {
         <a href="/" className="font-semibold text-lg tracking-tight">
           <span className="text-primary">CubeSat</span> Deploy Sim
         </a>
-        <nav className="flex gap-4 text-sm text-muted-foreground">
-          <a href="/" className="hover:text-foreground transition-colors">Overview</a>
-          <a href="/simulate" className="hover:text-foreground transition-colors">Simulation</a>
-          <a href="/compare" className="text-foreground">Compare</a>
-        </nav>
+        <div className="flex items-center gap-4">
+          <nav className="flex gap-4 text-sm text-muted-foreground">
+            <a href="/" className="hover:text-foreground transition-colors">Overview</a>
+            <a href="/simulate" className="hover:text-foreground transition-colors">Simulation</a>
+            <a href="/compare" className="text-foreground">Compare</a>
+          </nav>
+          <ThemeToggle />
+        </div>
       </header>
 
       <div className="max-w-7xl mx-auto p-6 space-y-6">

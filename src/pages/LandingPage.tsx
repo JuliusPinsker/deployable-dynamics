@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { CONFIGURATIONS } from '@/lib/physics/types';
 import { ArrowRight, Orbit, BarChart3, Zap } from 'lucide-react';
+import ThemeToggle from '@/components/ui/theme-toggle';
 
 const CONFIG_COLORS = ['hsl(210, 100%, 55%)', 'hsl(168, 70%, 45%)', 'hsl(35, 95%, 55%)', 'hsl(280, 65%, 55%)'];
 const CONFIG_ICONS = ['◧', '◫', '⊞', '⊠'];
@@ -19,11 +20,14 @@ export default function LandingPage() {
         <div className="font-semibold text-lg tracking-tight">
           <span className="text-primary">CubeSat</span> Deploy Sim
         </div>
-        <nav className="flex gap-4 text-sm text-muted-foreground">
-          <a href="/" className="text-foreground">Overview</a>
-          <a href="/simulate" className="hover:text-foreground transition-colors">Simulation</a>
-          <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
-        </nav>
+        <div className="flex items-center gap-4">
+          <nav className="flex gap-4 text-sm text-muted-foreground">
+            <a href="/" className="text-foreground">Overview</a>
+            <a href="/simulate" className="hover:text-foreground transition-colors">Simulation</a>
+            <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
+          </nav>
+          <ThemeToggle />
+        </div>
       </header>
 
       {/* Hero */}
