@@ -21,6 +21,7 @@ export default function SimulationPage() {
   const [speed, setSpeed] = useState(1);
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
+  const [showAxes, setShowAxes] = useState(true);
   const [params] = useState<SimulationParams>(DEFAULT_PARAMS);
 
   const rafRef = useRef<number>(0);
@@ -108,6 +109,7 @@ export default function SimulationPage() {
             state={state}
             params={params}
             showLabels={showLabels}
+            showAxes={showAxes}
             wireframe={wireframe}
             onPanelClick={handlePanelClick}
           />
@@ -175,6 +177,23 @@ export default function SimulationPage() {
                 <Label className="text-xs text-muted-foreground">Panel Labels</Label>
                 <Switch checked={showLabels} onCheckedChange={setShowLabels} />
               </div>
+
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">Coordinate System</Label>
+                <Switch checked={showAxes} onCheckedChange={setShowAxes} />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm">Spacecraft</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-xs text-muted-foreground">
+                {`Dimensions: ${Math.round(params.bodyWidth * 1000)} × ${Math.round(params.bodyDepth * 1000)} × ${(params.bodyHeight * 1000).toFixed(1)} mm (W × D × H)`}
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">Mass: {params.bodyMass} kg</div>
             </CardContent>
           </Card>
 

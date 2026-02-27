@@ -37,8 +37,18 @@ export default function ComparePage() {
   const allSimData = useMemo(() => {
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
     const results: Record<ConfigType, SimulationFrame[]> = {} as any;
+    
+    // Physics-driven mode: disable kinematic ramp to enable spring-damper + stop physics
+    const physicsParams = {
+      ...DEFAULT_PARAMS,
+      hinge: {
+        ...DEFAULT_PARAMS.hinge,
+        deployDuration: 0, // disables kinematic ramp; enables physics-driven motion
+      },
+    };
+    
     for (const c of configs) {
-      results[c] = runFullSimulation(c, DEFAULT_PARAMS, 8, stuckConfig);
+      results[c] = runFullSimulation(c, physicsParams, 8, stuckConfig);
     }
     return results;
   }, [stuckConfig]);

@@ -37,9 +37,15 @@ export default function LandingPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
         >
-          <div className="inline-flex items-center gap-2 bg-primary/10 text-primary text-xs font-medium px-3 py-1 rounded-full mb-6">
-            <Orbit className="h-3 w-3" />
-            Interactive Research Platform
+          <div className="flex items-center justify-center gap-3 mb-6">
+            <div className="inline-flex items-center gap-2 bg-primary/10 text-primary text-xs font-medium px-3 py-1 rounded-full">
+              <Orbit className="h-3 w-3" />
+              Interactive Research Platform
+            </div>
+            <div className="inline-flex items-center gap-2 bg-secondary/10 text-secondary text-xs font-medium px-3 py-1 rounded-full">
+              <span className="font-mono">3U</span>
+              100×100×340.5 mm
+            </div>
           </div>
           <h1 className="text-4xl md:text-5xl font-bold tracking-tight leading-tight mb-4">
             CubeSat Solar Panel

@@ -4,6 +4,10 @@
 
 **URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
 
+### Spacecraft model
+
+Default spacecraft is a **3U CubeSat**: Width **100 mm** × Depth **100 mm** × Height **340.5 mm** (W × D × H). Default body mass: **4.0 kg**.
+
 ## How can I edit this code?
 
 There are several ways of editing your application.
