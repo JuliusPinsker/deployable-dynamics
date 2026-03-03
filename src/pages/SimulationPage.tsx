@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, type SimulationParams } from '@/lib/physics/types';
 import { createInitialState, stepSimulation } from '@/lib/physics/engine';
+import { type ThermalParams, DEFAULT_THERMAL_PARAMS } from '@/lib/physics/thermalModel';
 import { Play, RotateCcw, Pause } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
@@ -17,7 +18,11 @@ export default function SimulationPage() {
   const initialConfig = (searchParams.get('config') as ConfigType) || 'long-edge';
 
   const [config, setConfig] = useState<ConfigType>(initialConfig);
-  const [state, setState] = useState<SpacecraftState>(() => createInitialState(config));
+  const [thermalEnabled, setThermalEnabled] = useState(false);
+  const [thermalParams, setThermalParams] = useState<ThermalParams>(DEFAULT_THERMAL_PARAMS);
+  const [state, setState] = useState<SpacecraftState>(() => 
+    createInitialState(config, thermalEnabled ? thermalParams : undefined)
+  );
   const [speed, setSpeed] = useState(1);
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
@@ -59,14 +64,14 @@ export default function SimulationPage() {
 
   const handleReset = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
-    setState(createInitialState(config));
-  }, [config]);
+    setState(createInitialState(config, thermalEnabled ? thermalParams : undefined));
+  }, [config, thermalEnabled, thermalParams]);
 
   const handleConfigChange = useCallback((c: ConfigType) => {
     cancelAnimationFrame(rafRef.current);
     setConfig(c);
-    setState(createInitialState(c));
-  }, []);
+    setState(createInitialState(c, thermalEnabled ? thermalParams : undefined));
+  }, [thermalEnabled, thermalParams]);
 
   const handlePanelClick = useCallback((index: number) => {
     setState(s => {
@@ -216,6 +221,67 @@ export default function SimulationPage() {
                 ))}
               </div>
             </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center justify-between">
+                <span>Thermal Environment</span>
+                <Switch
+                  checked={thermalEnabled}
+                  onCheckedChange={(v) => {
+                    setThermalEnabled(v);
+                    setState(createInitialState(config, v ? thermalParams : undefined));
+                  }}
+                />
+              </CardTitle>
+            </CardHeader>
+            {thermalEnabled && (
+              <CardContent className="space-y-4">
+                {/* Temperature readout */}
+                <div className="rounded-md bg-secondary/50 p-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Spring Temp</span>
+                    <span className="font-mono">
+                      {state.thermalState
+                        ? `${state.thermalState.currentTemperatureDeg.toFixed(1)}°C`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between mt-1">
+                    <span className="text-muted-foreground">Stiffness Factor</span>
+                    <span className={`font-mono ${
+                      state.thermalState && state.thermalState.stiffnessMultiplier < 0.97
+                        ? 'text-yellow-500' : 'text-green-500'
+                    }`}>
+                      {state.thermalState
+                        ? `${(state.thermalState.stiffnessMultiplier * 100).toFixed(1)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Orbit altitude slider */}
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">
+                    Orbit Altitude: {thermalParams.orbitAltitudeKm} km
+                  </Label>
+                  <Slider
+                    value={[thermalParams.orbitAltitudeKm]}
+                    onValueChange={([v]) => setThermalParams(p => ({ ...p, orbitAltitudeKm: v }))}
+                    min={200}
+                    max={800}
+                    step={50}
+                  />
+                </div>
+
+                {/* Temperature range display */}
+                <div className="text-xs text-muted-foreground">
+                  <div>Eclipse: {thermalParams.eclipseTemperatureDeg}°C</div>
+                  <div>Sunlight: {thermalParams.sunlightTemperatureDeg}°C</div>
+                </div>
+              </CardContent>
+            )}
           </Card>
         </div>
       </div>
