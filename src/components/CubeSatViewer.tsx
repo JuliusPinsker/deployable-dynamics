@@ -2,7 +2,7 @@ import React, { useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
-import type { ConfigType, SpacecraftState, SimulationParams } from '@/lib/physics/types';
+import type { ConfigType, SpacecraftState, SimulationParams, ThermalState } from '@/lib/physics/types';
 import { DEFAULT_PARAMS } from '@/lib/physics/types';
 
 interface CubeSatModelProps {
@@ -15,6 +15,43 @@ interface CubeSatModelProps {
   onPanelClick?: (index: number) => void;
   autoRotate?: boolean;
   size?: number;
+  /** When true, panel colours reflect temperature */
+  thermalEnabled?: boolean;
+  /** Current thermal state - temperature drives panel colour */
+  thermalState?: ThermalState;
+}
+
+/**
+ * Interpolates panel colour based on temperature.
+ * Cold (< -20°C): blue (#3b82f6)
+ * Neutral (~20°C): original panel colour
+ * Hot (> 60°C): orange-red (#ef4444)
+ */
+function getThermalColor(temperatureDeg: number): string {
+  // Define temperature range
+  const coldTemp = -20;  // °C - deep blue
+  const neutralTemp = 20; // °C - neutral
+  const hotTemp = 60;     // °C - hot red
+
+  // Clamp temperature
+  const t = Math.max(coldTemp, Math.min(hotTemp, temperatureDeg));
+
+  if (t <= neutralTemp) {
+    // Cold to neutral: blue (#3b82f6) to dark blue (#1e3f8a)
+    const ratio = (t - coldTemp) / (neutralTemp - coldTemp);
+    // Interpolate from cold blue to neutral grey-blue
+    const r = Math.round(59 + ratio * (30 - 59));
+    const g = Math.round(130 + ratio * (63 - 130));
+    const b = Math.round(246 + ratio * (138 - 246));
+    return `rgb(${r}, ${g}, ${b})`;
+  } else {
+    // Neutral to hot: dark blue (#1e3f8a) to orange-red (#ef4444)
+    const ratio = (t - neutralTemp) / (hotTemp - neutralTemp);
+    const r = Math.round(30 + ratio * (239 - 30));
+    const g = Math.round(63 + ratio * (68 - 63));
+    const b = Math.round(138 + ratio * (68 - 138));
+    return `rgb(${r}, ${g}, ${b})`;
+  }
 }
 
 const PANEL_COLOR = '#1a3a5c';
@@ -37,6 +74,7 @@ function SolarPanel({
   configColorIndex,
   frameWidth,
   children,
+  thermalColor,
 }: {
   position: [number, number, number];
   rotation: [number, number, number];
@@ -52,6 +90,8 @@ function SolarPanel({
   configColorIndex: number;
   frameWidth: number; // meters
   children?: React.ReactNode;
+  /** When provided, overrides config colour with thermal-driven colour */
+  thermalColor?: string;
 }) {
   const groupRef = useRef<THREE.Group>(null);
 
@@ -64,7 +104,10 @@ function SolarPanel({
     groupRef.current.rotation.copy(euler);
   });
 
-  const panelColor = stuck ? '#ef4444' : CONFIG_COLORS[configColorIndex] || PANEL_CELL_COLOR;
+  // Priority: stuck (red) > thermal colour > config colour
+  const panelColor = stuck 
+    ? '#ef4444' 
+    : (thermalColor ?? CONFIG_COLORS[configColorIndex] ?? PANEL_CELL_COLOR);
 
   // Decompose sandwich panel
   const length = size[0];
@@ -421,6 +464,8 @@ function CubeSatScene({
   wireframe = false,
   onPanelClick,
   size = 1,
+  thermalEnabled = false,
+  thermalState,
 }: CubeSatModelProps) {
   const bodyRef = useRef<THREE.Group>(null);
   // Coordinate system: X = width (right), Y = depth (forward), Z = height (up)
@@ -428,6 +473,12 @@ function CubeSatScene({
 
   const panelConfigs = useMemo(() => getPanelConfigs(config, size, params), [config, size, params]);
   const configIndex = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'].indexOf(config);
+
+  // Compute thermal colour if thermal effects are enabled
+  const thermalColor = useMemo(() => {
+    if (!thermalEnabled || !thermalState) return undefined;
+    return getThermalColor(thermalState.currentTemperatureDeg);
+  }, [thermalEnabled, thermalState?.currentTemperatureDeg]);
 
   useFrame(() => {
     if (!bodyRef.current) return;
@@ -509,6 +560,7 @@ function CubeSatScene({
             onClick={() => onPanelClick?.(i)}
             configColorIndex={configIndex}
             frameWidth={0.005 * size}
+            thermalColor={thermalColor}
           >
             {/* Render child panels hierarchically */}
             {childPanels.map(child => (
@@ -529,6 +581,7 @@ function CubeSatScene({
                 onClick={() => onPanelClick?.(child.idx)}
                 configColorIndex={configIndex}
                 frameWidth={0.005 * size}
+                thermalColor={thermalColor}
               />
             ))}
           </SolarPanel>

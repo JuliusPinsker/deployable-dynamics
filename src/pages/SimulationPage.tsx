@@ -174,6 +174,8 @@ export default function SimulationPage() {
             showAxes={showAxes}
             wireframe={wireframe}
             onPanelClick={handlePanelClick}
+            thermalEnabled={thermalEnabled}
+            thermalState={state.thermalState}
           />
           <TelemetryOverlay state={state} />
 
