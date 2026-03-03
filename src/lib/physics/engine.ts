@@ -174,6 +174,120 @@ function applyInertia(Idiag: Vector3, w: Vector3): Vector3 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  4th-order Runge-Kutta body integrator
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Integrate spacecraft body rotational dynamics using classical 4th-order
+ * Runge-Kutta (RK4).  The state vector is (q, ω) where:
+ *
+ *   dq/dt = 0.5 · q ⊗ [0, ω_body]          (kinematic equation)
+ *   dω/dt = I⁻¹ · (τ - ω × (I·ω))          (Euler's rotation equation)
+ *
+ * The external torque τ is treated as constant over the timestep — the
+ * standard approach for externally driven systems.
+ *
+ * Quaternion kinematic equation reference:
+ *   Wertz, J. R. (1978). *Spacecraft Attitude Determination and Control*,
+ *   Kluwer Academic Publishers, §16.1.
+ *
+ * RK4 error characteristics reference:
+ *   Shampine, L. F. & Reichelt, M. W. (1997). "The MATLAB ODE Suite",
+ *   SIAM Journal on Scientific Computing, 18(1), pp. 1–22.
+ *
+ * @param qBody     Current body orientation quaternion (world frame)
+ * @param omegaBody Current body angular velocity (world frame, rad/s)
+ * @param torqueWorld External torque in world frame (N·m) — held constant over dt
+ * @param Ib        Diagonal principal inertia tensor (body frame, kg·m²)
+ * @param dt        Integration timestep (s)
+ * @returns         {qBodyNew, omegaBodyNew} after one RK4 step
+ */
+export function integrateBodyRK4(
+  qBody: Quaternion,
+  omegaBody: Vector3,
+  torqueWorld: Vector3,
+  Ib: Vector3,
+  dt: number,
+): { qBodyNew: Quaternion; omegaBodyNew: Vector3 } {
+
+  // ── Derivative function: (q, ω) → (dq/dt, dω/dt) ────────────────────────
+  function deriv(
+    q: Quaternion,
+    omega: Vector3,
+  ): { dq: Quaternion; dOmega: Vector3 } {
+    // Kinematic equation: dq/dt = 0.5 · [0, ω_world] ⊗ q  (world-frame convention)
+    const omegaQuat: Quaternion = { w: 0, x: omega.x, y: omega.y, z: omega.z };
+    const qDot = qMultiply(omegaQuat, q);
+    const dq: Quaternion = {
+      w: 0.5 * qDot.w,
+      x: 0.5 * qDot.x,
+      y: 0.5 * qDot.y,
+      z: 0.5 * qDot.z,
+    };
+
+    // Euler's equation: I·α = τ - ω×(I·ω)
+    // Compute gyroscopic term in world frame via body frame
+    const omegaBody = qRotateVec(qConjugate(q), omega);
+    const IomegaBody = applyInertia(Ib, omegaBody);
+    const IomegaWorld = qRotateVec(q, IomegaBody);
+    const gyro = v3Cross(omega, IomegaWorld);
+    const netTorque = v3Sub(torqueWorld, gyro);
+    const dOmega = applyInverseInertia(Ib, q, netTorque);
+
+    return { dq, dOmega };
+  }
+
+  // ── Helper: add scaled quaternion derivative to quaternion ────────────────
+  function qAddScaled(q: Quaternion, dq: Quaternion, s: number): Quaternion {
+    return {
+      w: q.w + dq.w * s,
+      x: q.x + dq.x * s,
+      y: q.y + dq.y * s,
+      z: q.z + dq.z * s,
+    };
+  }
+
+  // ── RK4 stages ───────────────────────────────────────────────────────────
+  // k1
+  const k1 = deriv(qBody, omegaBody);
+
+  // k2 (midpoint using k1)
+  const q2 = qNormalize(qAddScaled(qBody, k1.dq, 0.5 * dt));
+  const omega2 = v3Add(omegaBody, v3Scale(k1.dOmega, 0.5 * dt));
+  const k2 = deriv(q2, omega2);
+
+  // k3 (midpoint using k2)
+  const q3 = qNormalize(qAddScaled(qBody, k2.dq, 0.5 * dt));
+  const omega3 = v3Add(omegaBody, v3Scale(k2.dOmega, 0.5 * dt));
+  const k3 = deriv(q3, omega3);
+
+  // k4 (full step using k3)
+  const q4 = qNormalize(qAddScaled(qBody, k3.dq, dt));
+  const omega4 = v3Add(omegaBody, v3Scale(k3.dOmega, dt));
+  const k4 = deriv(q4, omega4);
+
+  // ── Weighted combination ─────────────────────────────────────────────────
+  // y_{n+1} = y_n + (dt/6)(k1 + 2k2 + 2k3 + k4)
+  const dqFinal: Quaternion = {
+    w: (k1.dq.w + 2 * k2.dq.w + 2 * k3.dq.w + k4.dq.w) / 6,
+    x: (k1.dq.x + 2 * k2.dq.x + 2 * k3.dq.x + k4.dq.x) / 6,
+    y: (k1.dq.y + 2 * k2.dq.y + 2 * k3.dq.y + k4.dq.y) / 6,
+    z: (k1.dq.z + 2 * k2.dq.z + 2 * k3.dq.z + k4.dq.z) / 6,
+  };
+
+  const dOmegaFinal: Vector3 = {
+    x: (k1.dOmega.x + 2 * k2.dOmega.x + 2 * k3.dOmega.x + k4.dOmega.x) / 6,
+    y: (k1.dOmega.y + 2 * k2.dOmega.y + 2 * k3.dOmega.y + k4.dOmega.y) / 6,
+    z: (k1.dOmega.z + 2 * k2.dOmega.z + 2 * k3.dOmega.z + k4.dOmega.z) / 6,
+  };
+
+  const qBodyNew = qNormalize(qAddScaled(qBody, dqFinal, dt));
+  const omegaBodyNew = v3Add(omegaBody, v3Scale(dOmegaFinal, dt));
+
+  return { qBodyNew, omegaBodyNew };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Hinge axis from panel spec
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -372,35 +486,15 @@ export function stepSimulation(
     bodyTorqueWorld.z -= hingeTorque * aWorld2.z;
   }
 
-  // ── Phase 2: body rotational dynamics (ENABLED) ────────────────────────────
-  // Integrate spacecraft body attitude due to internal hinge reaction torques.
-  // Euler equation: I·α = τ − ω×(I·ω)
-
-  // Gyroscopic term ω×(Iω) computed in world frame
-  const omegaBodyBody = qRotateVec(qConjugate(qBody), omegaBody);
-  const IomegaBody = applyInertia(Ib, omegaBodyBody);
-  const IomegaWorld = qRotateVec(qBody, IomegaBody);
-  const gyroWorld = v3Cross(omegaBody, IomegaWorld);
-
-  const netTorqueWorld = v3Sub(bodyTorqueWorld, gyroWorld);
-  const alphaWorld: Vector3 = applyInverseInertia(Ib, qBody, netTorqueWorld);
-
-  // Semi-implicit Euler: ω_{n+1} = ω_n + α·dt
-  const omegaBodyNew: Vector3 = v3Add(omegaBody, v3Scale(alphaWorld, dt));
-
-  // Integrate quaternion using incremental axis-angle from ω (world frame)
-  const wMag = Math.sqrt(
-    omegaBodyNew.x * omegaBodyNew.x +
-    omegaBodyNew.y * omegaBodyNew.y +
-    omegaBodyNew.z * omegaBodyNew.z
+  // ── Phase 2: body rotational dynamics (RK4) ───────────────────────────────
+  // Integrate spacecraft body attitude using 4th-order Runge-Kutta.
+  // Euler equation: I·α = τ − ω×(I·ω), with external torque from panel hinges.
+  const { qBodyNew, omegaBodyNew } = integrateBodyRK4(
+    qBody, omegaBody, bodyTorqueWorld, Ib, dt,
   );
 
-  let qBodyNew: Quaternion = qBody;
-  if (wMag > 1e-12) {
-    const axis = v3Scale(omegaBodyNew, 1 / wMag);
-    const qDelta = qFromAxisAngle(axis, wMag * dt);
-    qBodyNew = qNormalize(qMultiply(qDelta, qBody));
-  }
+  // Approximate angular acceleration from finite difference (for telemetry)
+  const alphaWorld: Vector3 = v3Scale(v3Sub(omegaBodyNew, omegaBody), 1 / dt);
 
   // ── Phase 3: assemble new panel states with derived quaternions ────────────
   const newPanels: PanelState[] = state.panels.map((panel, i) => {
