@@ -27,7 +27,25 @@ export default function SimulationPage() {
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
-  const [params] = useState<SimulationParams>(DEFAULT_PARAMS);
+  const params = React.useMemo<SimulationParams>(() => {
+    if (thermalEnabled) {
+      // Switch to physics-driven spring mode so thermal stiffness
+      // changes are physically visible in deployment speed.
+      // deployDuration: 0 disables kinematic ease-out and activates
+      // the spring-damper branch where applyThermalStiffness is called.
+      return {
+        ...DEFAULT_PARAMS,
+        hinge: {
+          ...DEFAULT_PARAMS.hinge,
+          deployDuration: 0,
+          springConstant: 0.12,
+          dampingCoeff: 0.08,
+          preloadTorque: 0.015,
+        },
+      };
+    }
+    return DEFAULT_PARAMS;
+  }, [thermalEnabled]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -39,16 +57,43 @@ export default function SimulationPage() {
   const speedRef = useRef(speed);
   speedRef.current = speed;
 
+  const paramsRef = useRef(params);
+  paramsRef.current = params;
+
+  const thermalEnabledRef = useRef(thermalEnabled);
+  thermalEnabledRef.current = thermalEnabled;
+
   const animate = useCallback(() => {
     const st = stateRef.current;
-    if (!st.deploying) return;
-
-    const stepsPerFrame = Math.max(1, Math.round(speedRef.current));
-    let newState = st;
-    for (let i = 0; i < stepsPerFrame; i++) {
-      newState = stepSimulation(newState, configRef.current, params);
+    const currentParams = paramsRef.current;
+    
+    if (st.deploying) {
+      // Normal deployment physics loop
+      const stepsPerFrame = Math.max(1, Math.round(speedRef.current));
+      let newState = st;
+      for (let i = 0; i < stepsPerFrame; i++) {
+        newState = stepSimulation(newState, configRef.current, currentParams);
+      }
+      setState(newState);
+    } else if (thermalEnabledRef.current && st.thermalState && st.thermalParams) {
+      // Post-deployment: keep advancing thermal state only
+      // so the user can watch the full eclipse/sunlight cycle
+      import('@/lib/physics/thermalModel').then(({ stepThermalState }) => {
+        const newThermal = stepThermalState(
+          st.thermalState!,
+          st.thermalParams!,
+          currentParams.timeStep
+        );
+        setState(prev => ({
+          ...prev,
+          thermalState: newThermal,
+          thermalParams: prev.thermalParams,
+        }));
+      });
+    } else {
+      return;
     }
-    setState(newState);
+    
     rafRef.current = requestAnimationFrame(animate);
   }, [params]);
 
@@ -88,6 +133,18 @@ export default function SimulationPage() {
   useEffect(() => {
     return () => cancelAnimationFrame(rafRef.current);
   }, []);
+
+  // Start background thermal animation when enabled
+  useEffect(() => {
+    if (thermalEnabled && !state.deploying) {
+      rafRef.current = requestAnimationFrame(animate);
+    }
+    return () => {
+      if (!state.deploying) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, [thermalEnabled, animate]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -231,6 +288,7 @@ export default function SimulationPage() {
                   checked={thermalEnabled}
                   onCheckedChange={(v) => {
                     setThermalEnabled(v);
+                    cancelAnimationFrame(rafRef.current);
                     setState(createInitialState(config, v ? thermalParams : undefined));
                   }}
                 />
@@ -239,23 +297,48 @@ export default function SimulationPage() {
             {thermalEnabled && (
               <CardContent className="space-y-4">
                 {/* Temperature readout */}
-                <div className="rounded-md bg-secondary/50 p-2 text-xs">
+                <div className="rounded-md bg-secondary/50 p-3 space-y-2 text-xs">
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Spring Temp</span>
-                    <span className="font-mono">
+                    <span className="font-mono font-medium">
                       {state.thermalState
                         ? `${state.thermalState.currentTemperatureDeg.toFixed(1)}°C`
                         : '—'}
                     </span>
                   </div>
-                  <div className="flex justify-between mt-1">
-                    <span className="text-muted-foreground">Stiffness Factor</span>
-                    <span className={`font-mono ${
-                      state.thermalState && state.thermalState.stiffnessMultiplier < 0.97
-                        ? 'text-yellow-500' : 'text-green-500'
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Stiffness</span>
+                    <span className={`font-mono font-medium ${
+                      !state.thermalState
+                        ? ''
+                        : state.thermalState.stiffnessMultiplier < 0.97
+                        ? 'text-yellow-500'
+                        : state.thermalState.stiffnessMultiplier > 1.03
+                        ? 'text-blue-400'
+                        : 'text-green-500'
                     }`}>
                       {state.thermalState
-                        ? `${(state.thermalState.stiffnessMultiplier * 100).toFixed(1)}%`
+                        ? `${(state.thermalState.stiffnessMultiplier * 100).toFixed(2)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Orbit Phase</span>
+                    <span className="font-mono">
+                      {state.thermalState
+                        ? `${((state.thermalState.orbitPhaseRad / (2 * Math.PI)) * 100).toFixed(1)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Status</span>
+                    <span className={
+                      state.thermalState?.isEclipse
+                        ? 'text-blue-400 font-medium'
+                        : 'text-yellow-400 font-medium'
+                    }>
+                      {state.thermalState
+                        ? (state.thermalState.isEclipse ? '🌑 Eclipse' : '☀️ Sunlit')
                         : '—'}
                     </span>
                   </div>
@@ -276,9 +359,13 @@ export default function SimulationPage() {
                 </div>
 
                 {/* Temperature range display */}
-                <div className="text-xs text-muted-foreground">
+                <div className="text-xs text-muted-foreground space-y-1">
                   <div>Eclipse: {thermalParams.eclipseTemperatureDeg}°C</div>
                   <div>Sunlight: {thermalParams.sunlightTemperatureDeg}°C</div>
+                  <div className="pt-1 border-t border-border text-[10px] text-muted-foreground/60">
+                    Orbit time ×600 accelerated for display.
+                    Physics equations unchanged.
+                  </div>
                 </div>
               </CardContent>
             )}

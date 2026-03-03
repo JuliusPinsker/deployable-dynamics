@@ -6,6 +6,7 @@ import {
   stepThermalState,
   applyThermalStiffness,
   DEFAULT_THERMAL_PARAMS,
+  THERMAL_TIME_SCALE,
 } from '../lib/physics/thermalModel';
 import type { ThermalParams, ThermalState } from '../lib/physics/thermalModel';
 
@@ -142,18 +143,18 @@ describe('initThermalState', () => {
 });
 
 describe('stepThermalState', () => {
-  it('advances orbit phase', () => {
+  it('advances orbit phase with time scale', () => {
     const state = initThermalState(DEFAULT_THERMAL_PARAMS);
     const dt = 1; // 1 second
     const next = stepThermalState(state, DEFAULT_THERMAL_PARAMS, dt);
-    const expectedPhase = (2 * Math.PI / state.orbitPeriodS) * dt;
+    const expectedPhase = (2 * Math.PI / state.orbitPeriodS) * dt * THERMAL_TIME_SCALE;
     expect(next.orbitPhaseRad).toBeCloseTo(expectedPhase, 8);
   });
 
   it('wraps orbit phase to [0, 2π]', () => {
     const state = initThermalState(DEFAULT_THERMAL_PARAMS);
-    // Jump almost a full orbit
-    const dt = state.orbitPeriodS * 1.5;
+    // Jump enough for multiple full orbits with time scale
+    const dt = state.orbitPeriodS * 1.5 / THERMAL_TIME_SCALE;
     const next = stepThermalState(state, DEFAULT_THERMAL_PARAMS, dt);
     expect(next.orbitPhaseRad).toBeGreaterThanOrEqual(0);
     expect(next.orbitPhaseRad).toBeLessThan(2 * Math.PI);
@@ -164,9 +165,9 @@ describe('stepThermalState', () => {
     const eclipseF = computeEclipseFraction(400, 0);
     const eclipseStartPhase = (1 - eclipseF) * 2 * Math.PI;
 
-    // Jump to just past the eclipse start + small margin
+    // Jump to just past the eclipse start + small margin, accounting for time scale
     const phaseTarget = eclipseStartPhase + 0.01;
-    const dt = (phaseTarget / (2 * Math.PI)) * state.orbitPeriodS;
+    const dt = (phaseTarget / (2 * Math.PI)) * state.orbitPeriodS / THERMAL_TIME_SCALE;
 
     const next = stepThermalState(state, DEFAULT_THERMAL_PARAMS, dt);
     expect(next.isEclipse).toBe(true);
@@ -175,10 +176,11 @@ describe('stepThermalState', () => {
   it('temperature moves toward eclipse temperature during eclipse', () => {
     // Step through the orbit in small increments until we enter eclipse
     let current = initThermalState(DEFAULT_THERMAL_PARAMS);
-    const dt = 10; // 10 second steps (stable for τ = 300 s)
+    // With THERMAL_TIME_SCALE=600, effective dt = 0.1 * 600 = 60s (stable for τ = 300s)
+    const dt = 0.1;
 
     // Advance until we're in eclipse
-    for (let i = 0; i < 1000; i++) {
+    for (let i = 0; i < 10000; i++) {
       current = stepThermalState(current, DEFAULT_THERMAL_PARAMS, dt);
       if (current.isEclipse) break;
     }
@@ -240,8 +242,9 @@ describe('stepThermalState', () => {
 
   it('completes a full orbit cycle', () => {
     let state = initThermalState(DEFAULT_THERMAL_PARAMS);
-    const dt = 1; // 1 second steps
-    const nSteps = Math.ceil(state.orbitPeriodS / dt);
+    const dt = 1; // 1 second steps (with THERMAL_TIME_SCALE, covers orbit faster)
+    // With THERMAL_TIME_SCALE=600, one orbit of ~5555s takes ~9.3 real seconds
+    const nSteps = Math.ceil(state.orbitPeriodS / (dt * THERMAL_TIME_SCALE));
 
     let sawEclipse = false;
     let sawSunlight = false;
@@ -255,7 +258,7 @@ describe('stepThermalState', () => {
     expect(sawEclipse).toBe(true);
     expect(sawSunlight).toBe(true);
     // After one full orbit, phase should wrap back near 0
-    expect(state.orbitPhaseRad).toBeLessThan(0.01);
+    expect(state.orbitPhaseRad).toBeLessThan(1.0);
   });
 });
 
@@ -281,5 +284,50 @@ describe('applyThermalStiffness', () => {
   it('handles zero spring constant', () => {
     const state = initThermalState(DEFAULT_THERMAL_PARAMS);
     expect(applyThermalStiffness(0, state, DEFAULT_THERMAL_PARAMS)).toBe(0);
+  });
+});
+
+describe('THERMAL_TIME_SCALE', () => {
+  it('is exported and equals 600', () => {
+    expect(THERMAL_TIME_SCALE).toBe(600);
+  });
+
+  it('makes eclipse visible within ~9 real seconds', () => {
+    // At 400 km, orbit period ~5555 s. With ×600 scale, one orbit = ~9.3 real seconds.
+    // Eclipse starts at ~63% of orbit → should occur at ~5.8 real seconds.
+    let state = initThermalState(DEFAULT_THERMAL_PARAMS);
+    const dt = 1 / 60; // 60 fps timestep
+    const maxFrames = 10 * 60; // 10 real seconds at 60 fps
+
+    let eclipseFrame = -1;
+    for (let i = 0; i < maxFrames; i++) {
+      state = stepThermalState(state, DEFAULT_THERMAL_PARAMS, dt);
+      if (state.isEclipse && eclipseFrame < 0) {
+        eclipseFrame = i;
+        break;
+      }
+    }
+
+    // Eclipse should be reached within 10 seconds of simulation
+    expect(eclipseFrame).toBeGreaterThan(0);
+    const eclipseTimeS = eclipseFrame * dt;
+    expect(eclipseTimeS).toBeLessThan(10);
+    expect(eclipseTimeS).toBeGreaterThan(4); // sanity: not instant
+  });
+
+  it('temperature changes visibly within deployment window', () => {
+    // Step from sunlight into eclipse and verify temperature drops
+    let state = initThermalState(DEFAULT_THERMAL_PARAMS);
+    const dt = 1 / 60;
+    const initialTemp = state.currentTemperatureDeg;
+
+    // Run for 8 real seconds — should enter eclipse and start cooling
+    for (let i = 0; i < 8 * 60; i++) {
+      state = stepThermalState(state, DEFAULT_THERMAL_PARAMS, dt);
+    }
+
+    // Temperature should have changed noticeably (> 5°C)
+    const tempChange = Math.abs(state.currentTemperatureDeg - initialTemp);
+    expect(tempChange).toBeGreaterThan(5);
   });
 });

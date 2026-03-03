@@ -36,6 +36,17 @@ const MU_KM3_S2 = 398600.4418;
  */
 const ALPHA_E = 3.0e-4;
 
+/**
+ * Time acceleration factor for thermal simulation.
+ * Compresses a full LEO orbit (~5555s at 400km) into
+ * the deployment window so eclipse transitions are
+ * visible during a ~5-10 second simulation.
+ * A factor of 600 means 1 real second = 10 orbit-minutes.
+ * Scientific basis: this is a display accelerator only —
+ * the underlying physics equations are unchanged.
+ */
+export const THERMAL_TIME_SCALE = 600;
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Interfaces
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,7 +245,7 @@ export function stepThermalState(
 ): ThermalState {
   // (a) Advance orbital phase and wrap to [0, 2π)
   const phaseRate = (2 * Math.PI) / state.orbitPeriodS;
-  let newPhase = state.orbitPhaseRad + phaseRate * dt;
+  let newPhase = state.orbitPhaseRad + phaseRate * dt * THERMAL_TIME_SCALE;
   newPhase = newPhase % (2 * Math.PI);
   if (newPhase < 0) newPhase += 2 * Math.PI;
 
@@ -254,7 +265,7 @@ export function stepThermalState(
     : params.sunlightTemperatureDeg;
 
   const dTdt = (targetTemp - state.currentTemperatureDeg) / params.thermalTimeConstantS;
-  const newTemp = state.currentTemperatureDeg + dTdt * dt;
+  const newTemp = state.currentTemperatureDeg + dTdt * dt * THERMAL_TIME_SCALE;
 
   // (e) Stiffness multiplier from updated temperature
   const stiffnessMultiplier = computeStiffnessMultiplier(
