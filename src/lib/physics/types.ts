@@ -19,8 +19,13 @@ export interface HingeParams {
   frictionCoeff: number;     // N·m
   preloadTorque: number;     // N·m
   stopAngle: number;         // radians (deployment target)
-  stopStiffness: number;     // N/m for mechanical stop
-  stopDamping: number;       // N·s/m for mechanical stop
+  /**
+   * Rotational contact model for the mechanical stop:
+   *   τ_stop = -k_stop · (θ - θ_stop) - c_stop · dθ/dt   [N·m]
+   * where k_stop = stopStiffness and c_stop = stopDamping.
+   */
+  stopStiffness: number;     // N·m/rad — rotational stiffness of mechanical stop
+  stopDamping: number;       // N·m·s/rad — rotational damping of mechanical stop
   // Optional: kinematic deployment duration (seconds). When provided, panels follow a deterministic ease-out
   // kinematic profile (useful for precise animation timing). If omitted, the hinge is physics-driven.
   deployDuration?: number;
@@ -133,8 +138,8 @@ export const DEFAULT_PARAMS: SimulationParams = {
     frictionCoeff: 0.0005,   // small Coulomb friction
     preloadTorque: 0.0,      // no preload — controlled spring response
     stopAngle: Math.PI / 2,
-    stopStiffness: 500,
-    stopDamping: 5,
+    stopStiffness: 10,       // N·m/rad — ω_n ≈ 100 rad/s for I_panel = 0.001 kg·m²
+    stopDamping: 0.24,        // N·m·s/rad — ζ ≈ 1.2 (overdamped, settles in ~0.05 s)
     deployDuration: 2.0,
   },
   timeStep: 1 / 60,
