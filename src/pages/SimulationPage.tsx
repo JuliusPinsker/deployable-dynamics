@@ -179,6 +179,30 @@ export default function SimulationPage() {
           />
           <TelemetryOverlay state={state} />
 
+          {thermalEnabled && (
+            <div style={{
+              position: 'absolute',
+              bottom: 16,
+              right: 16,
+              background: 'rgba(0,0,0,0.75)',
+              borderRadius: 8,
+              padding: '8px 12px',
+              pointerEvents: 'none',
+            }}>
+              <div style={{ fontSize: 11, color: '#aaa', marginBottom: 4 }}>Panel Temperature (K)</div>
+              <div style={{
+                width: 120,
+                height: 10,
+                borderRadius: 4,
+                background: 'linear-gradient(to right, rgb(30,80,200), rgb(40,160,80), rgb(255,80,10))',
+                marginBottom: 4,
+              }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#ccc' }}>
+                <span>170 K</span><span>255 K</span><span>340 K</span>
+              </div>
+            </div>
+          )}
+
           {/* Deploy controls overlay */}
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-2">
             <Button onClick={handleDeploy} size="lg" className="gap-2">
