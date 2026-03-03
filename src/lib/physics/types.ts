@@ -1,5 +1,9 @@
 // Physics engine types for CubeSat solar panel deployment simulation
 
+import type { ThermalState, ThermalParams } from './thermalModel';
+
+export type { ThermalState, ThermalParams } from './thermalModel';
+
 export interface Vector3 {
   x: number;
   y: number;
@@ -53,6 +57,9 @@ export interface SpacecraftState {
   deploying: boolean;
   // ── Internal quaternion state (engine-managed) ──
   _bodyQ?: Quaternion;       // body orientation quaternion
+  // ── Thermal model state (optional) ──
+  thermalState?: ThermalState;
+  thermalParams?: ThermalParams;
 }
 
 export interface SimulationParams {
@@ -66,6 +73,8 @@ export interface SimulationParams {
   bodyHeight: number;        // m (Z dimension / up / long edge)
   hinge: HingeParams;
   timeStep: number;          // seconds
+  // ── Optional thermal model parameters ──
+  thermal?: ThermalParams;
 }
 
 export type ConfigType =

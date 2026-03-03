@@ -16,10 +16,16 @@ import {
   type PanelState,
   type Vector3,
   type Quaternion,
+  type ThermalParams,
   DEFAULT_PARAMS,
 } from './types';
 
 import { getPanelSpecs } from './panelLayouts';
+import {
+  initThermalState,
+  stepThermalState,
+  applyThermalStiffness,
+} from './thermalModel';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Vector3 helpers
@@ -393,7 +399,10 @@ function createInitialPanels(config: ConfigType): PanelState[] {
   }));
 }
 
-export function createInitialState(config: ConfigType): SpacecraftState {
+export function createInitialState(
+  config: ConfigType,
+  thermalParams?: ThermalParams,
+): SpacecraftState {
   return {
     angularVelocity: { x: 0, y: 0, z: 0 },
     angularAcceleration: { x: 0, y: 0, z: 0 },
@@ -402,6 +411,8 @@ export function createInitialState(config: ConfigType): SpacecraftState {
     time: 0,
     deploying: false,
     _bodyQ: qIdentity(),
+    thermalState: thermalParams ? initThermalState(thermalParams) : undefined,
+    thermalParams: thermalParams,
   };
 }
 
@@ -417,6 +428,13 @@ export function stepSimulation(
   if (!state.deploying) return state;
 
   const dt = params.timeStep;
+
+  // ── Step thermal model (if active) ─────────────────────────────────────────
+  let thermalState = state.thermalState;
+  const thermalParams = state.thermalParams ?? params.thermal;
+  if (thermalState && thermalParams) {
+    thermalState = stepThermalState(thermalState, thermalParams, dt);
+  }
   const specs = getPanelSpecs(config, params);
 
   // ── Current body state ────────────────────────────────────────────────────
@@ -520,7 +538,11 @@ export function stepSimulation(
       const h = params.hinge;
       // Use panel-specific max angle as the target stop angle
       const stopAngle = panelMaxAngle;
-      let tau = h.springConstant * (stopAngle - theta) + h.preloadTorque;
+      // Apply thermal stiffness multiplier if thermal model is active
+      const effectiveSpringConstant = thermalState && thermalParams
+        ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
+        : h.springConstant;
+      let tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
       tau -= h.dampingCoeff * omegaRel;
       tau -= Math.sign(omegaRel) * h.frictionCoeff;
 
@@ -609,6 +631,8 @@ export function stepSimulation(
     time: state.time + dt,
     deploying: !allDeployed,
     _bodyQ: qBodyNew,
+    thermalState,
+    thermalParams,
   };
 }
 
@@ -625,6 +649,10 @@ export interface SimulationFrame {
   totalContactForce: number;
   /** Relative angular momentum error |H - H₀| / |H₀| (dimensionless). 0 when H₀ ≈ 0. */
   momentumError: number;
+  /** Current thermal temperature in °C (undefined if thermal model inactive). */
+  thermalTemperatureDeg?: number;
+  /** Thermal stiffness multiplier (undefined if thermal model inactive). */
+  stiffnessMultiplier?: number;
 }
 
 export function runFullSimulation(
@@ -633,7 +661,7 @@ export function runFullSimulation(
   maxTime: number = 10,
   stuckPanels: number[] = [],
 ): SimulationFrame[] {
-  let state = createInitialState(config);
+  let state = createInitialState(config, params.thermal);
   state.deploying = true;
 
   // Apply stuck panels
@@ -685,6 +713,8 @@ export function runFullSimulation(
         contactForces: state.panels.map(p => p.contactForce),
         totalContactForce: state.panels.reduce((s, p) => s + p.contactForce, 0),
         momentumError,
+        thermalTemperatureDeg: state.thermalState?.currentTemperatureDeg,
+        stiffnessMultiplier: state.thermalState?.stiffnessMultiplier,
       });
     }
 
