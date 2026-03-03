@@ -288,6 +288,80 @@ export function integrateBodyRK4(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Angular momentum computation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compute the total system angular momentum H_total in the world frame.
+ *
+ * The decomposition follows Hughes (1986) *Spacecraft Attitude Dynamics*,
+ * Cambridge University Press, Chapter 3:
+ *
+ *   H_total = I_body · ω_body + Σ_i [ I_panel_i · ω_panel_i ]
+ *
+ * where:
+ *   ω_panel_i = ω_body + θ̇_i · â_i   (body velocity + relative hinge rotation)
+ *   â_i = hinge axis in world frame
+ *   I_panel_i is the panel's full inertia tensor (about its hinge edge),
+ *     rotated to the world frame.
+ *
+ * All inertia tensors are diagonal in their respective body frames and
+ * are rotated to the world frame using the current orientation quaternions.
+ *
+ * @param state  Current spacecraft state (body + panels)
+ * @param config Configuration type (determines panel specs)
+ * @param params Simulation parameters (masses, dimensions)
+ * @returns H_total as a Vector3 in world frame (kg·m²/s)
+ */
+export function computeTotalAngularMomentum(
+  state: SpacecraftState,
+  config: ConfigType,
+  params: SimulationParams = DEFAULT_PARAMS,
+): Vector3 {
+  const specs = getPanelSpecs(config, params);
+  const qBody = state._bodyQ ? { ...state._bodyQ } : qFromEuler(state.orientation);
+  const omegaBody = state.angularVelocity;
+
+  // ── Body contribution: H_body = R_body · I_body_diag · R_body^T · ω_body ──
+  const Ib = bodyInertiaDiag(params);
+  const omegaBodyLocal = qRotateVec(qConjugate(qBody), omegaBody);
+  const HbodyLocal = applyInertia(Ib, omegaBodyLocal);
+  const Htotal: Vector3 = { ...qRotateVec(qBody, HbodyLocal) };
+
+  // ── Panel contributions ────────────────────────────────────────────────────
+  for (let i = 0; i < state.panels.length; i++) {
+    const panel = state.panels[i];
+    const spec = specs[i];
+
+    // Panel inertia tensor (diagonal, panel body frame about hinge edge)
+    const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
+
+    // Panel orientation quaternion
+    const qMount = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
+    const aLocal = hingeAxisUnit(spec.axis);
+    const aBody = qRotateVec(qMount, aLocal);
+    const aWorld = qRotateVec(qBody, aBody);
+
+    const qHinge = qFromAxisAngle(aLocal, panel.angle);
+    const qPanel = qNormalize(qMultiply(qMultiply(qBody, qMount), qHinge));
+
+    // Panel angular velocity in world frame: ω_panel = ω_body + θ̇ · â_world
+    const omegaPanel = v3Add(omegaBody, v3Scale(aWorld, panel.angularVelocity));
+
+    // Rotate ω to panel body frame, apply diagonal inertia, rotate back
+    const omegaPanelLocal = qRotateVec(qConjugate(qPanel), omegaPanel);
+    const HpanelLocal = applyInertia(Ip, omegaPanelLocal);
+    const HpanelWorld = qRotateVec(qPanel, HpanelLocal);
+
+    Htotal.x += HpanelWorld.x;
+    Htotal.y += HpanelWorld.y;
+    Htotal.z += HpanelWorld.z;
+  }
+
+  return Htotal;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Hinge axis from panel spec
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -549,6 +623,8 @@ export interface SimulationFrame {
   panelAngles: number[];
   contactForces: number[];
   totalContactForce: number;
+  /** Relative angular momentum error |H - H₀| / |H₀| (dimensionless). 0 when H₀ ≈ 0. */
+  momentumError: number;
 }
 
 export function runFullSimulation(
@@ -571,8 +647,33 @@ export function runFullSimulation(
   const frames: SimulationFrame[] = [];
   const maxSteps = Math.ceil(maxTime / params.timeStep);
 
+  // ── Angular momentum conservation tracking ─────────────────────────────
+  const H0 = computeTotalAngularMomentum(state, config, params);
+  const H0mag = Math.sqrt(H0.x * H0.x + H0.y * H0.y + H0.z * H0.z);
+
   for (let i = 0; i < maxSteps; i++) {
     state = stepSimulation(state, config, params);
+
+    // ── Periodic momentum conservation check (every 60 frames ≈ 1 s) ─────
+    let momentumError = 0;
+    if (i % 60 === 59 || i % 3 === 0) {
+      const Hcur = computeTotalAngularMomentum(state, config, params);
+      const dH = {
+        x: Hcur.x - H0.x,
+        y: Hcur.y - H0.y,
+        z: Hcur.z - H0.z,
+      };
+      const dHmag = Math.sqrt(dH.x * dH.x + dH.y * dH.y + dH.z * dH.z);
+      momentumError = H0mag > 1e-12 ? dHmag / H0mag : dHmag;
+
+      // Warn on > 5% violation (only on the 60-frame check cadence)
+      if (i % 60 === 59 && momentumError > 0.05) {
+        console.warn(
+          `[momentum] t=${state.time.toFixed(3)}s: angular momentum error ` +
+          `${(momentumError * 100).toFixed(2)}% exceeds 5% threshold`,
+        );
+      }
+    }
 
     // Record every 3rd frame for chart data
     if (i % 3 === 0) {
@@ -583,6 +684,7 @@ export function runFullSimulation(
         panelAngles: state.panels.map(p => p.angle),
         contactForces: state.panels.map(p => p.contactForce),
         totalContactForce: state.panels.reduce((s, p) => s + p.contactForce, 0),
+        momentumError,
       });
     }
 
