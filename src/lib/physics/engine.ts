@@ -180,6 +180,71 @@ function applyInertia(Idiag: Vector3, w: Vector3): Vector3 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Gravity gradient torque
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Compute the gravity gradient torque acting on the spacecraft body.
+ *
+ * For a rigid body in a circular orbit, the gravity gradient torque is:
+ *   τ_gg = (3μ/R³) · r̂_body × (I · r̂_body)
+ *
+ * In body-frame components (diagonal I):
+ *   τ_x = (3μ/R³) · (Izz - Iyy) · r̂_y · r̂_z
+ *   τ_y = (3μ/R³) · (Ixx - Izz) · r̂_z · r̂_x
+ *   τ_z = (3μ/R³) · (Iyy - Ixx) · r̂_x · r̂_y
+ *
+ * Reference: Hughes (1986), Spacecraft Attitude Dynamics, §3.3.
+ *
+ * @param Ib   Diagonal body principal inertia tensor [Ixx, Iyy, Izz] (kg·m²)
+ * @param qBody Current body orientation quaternion (world frame)
+ * @param t    Current simulation time (seconds)
+ * @param altitudeM Orbit altitude above Earth surface (metres)
+ * @returns Gravity gradient torque vector in WORLD frame (N·m)
+ */
+function computeGravityGradientTorque(
+  Ib: Vector3,
+  qBody: Quaternion,
+  t: number,
+  altitudeM: number,
+): Vector3 {
+  // Physical constants (SI)
+  const MU = 3.986004418e14;    // m³/s²  Earth gravitational parameter
+  const R_EARTH = 6.371e6;      // m       Earth mean radius
+
+  // Orbital mechanics
+  const R = R_EARTH + altitudeM;           // orbit radius (m)
+  const T_orbit = 2 * Math.PI * Math.sqrt((R * R * R) / MU); // period (s)
+  const n = (2 * Math.PI) / T_orbit;       // mean motion (rad/s)
+
+  // Nadir unit vector in world frame: points from spacecraft toward Earth centre.
+  // For equatorial circular orbit in our convention (X=right, Y=forward, Z=up),
+  // nadir rotates in the Y-Z plane as the satellite orbits.
+  const nadirWorld: Vector3 = {
+    x: 0,
+    y: -Math.sin(n * t),
+    z: -Math.cos(n * t),
+  };
+
+  // Transform nadir to body frame: r̂_body = q* ⊗ r̂_world
+  const nadirBody = qRotateVec(qConjugate(qBody), nadirWorld);
+  const rx = nadirBody.x;
+  const ry = nadirBody.y;
+  const rz = nadirBody.z;
+
+  // Gravity gradient factor: 3μ/R³
+  const factor = (3 * MU) / (R * R * R);
+
+  // Body-frame torque components (Hughes 1986, Eq. 3.3.10)
+  const tauBodyX = factor * (Ib.z - Ib.y) * ry * rz;
+  const tauBodyY = factor * (Ib.x - Ib.z) * rz * rx;
+  const tauBodyZ = factor * (Ib.y - Ib.x) * rx * ry;
+  const tauBody: Vector3 = { x: tauBodyX, y: tauBodyY, z: tauBodyZ };
+
+  // Rotate torque back to world frame for accumulation with hinge torques
+  return qRotateVec(qBody, tauBody);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  4th-order Runge-Kutta body integrator
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -584,9 +649,20 @@ export function stepSimulation(
 
   // ── Phase 2: body rotational dynamics (RK4) ───────────────────────────────
   // Integrate spacecraft body attitude using 4th-order Runge-Kutta.
-  // Euler equation: I·α = τ − ω×(I·ω), with external torque from panel hinges.
+  // External torque = hinge reaction torques + gravity gradient disturbance.
+
+  // Compute gravity gradient torque and add to body torque
+  const totalBodyTorqueWorld: Vector3 = { ...bodyTorqueWorld };
+  if (params.gravityGradientEnabled !== false) {
+    const altM = params.orbitAltitudeM ?? 400_000;
+    const ggTorque = computeGravityGradientTorque(Ib, qBody, state.time, altM);
+    totalBodyTorqueWorld.x += ggTorque.x;
+    totalBodyTorqueWorld.y += ggTorque.y;
+    totalBodyTorqueWorld.z += ggTorque.z;
+  }
+
   const { qBodyNew, omegaBodyNew } = integrateBodyRK4(
-    qBody, omegaBody, bodyTorqueWorld, Ib, dt,
+    qBody, omegaBody, totalBodyTorqueWorld, Ib, dt,
   );
 
   // Approximate angular acceleration from finite difference (for telemetry)
@@ -653,6 +729,8 @@ export interface SimulationFrame {
   thermalTemperatureDeg?: number;
   /** Thermal stiffness multiplier (undefined if thermal model inactive). */
   stiffnessMultiplier?: number;
+  /** Gravity gradient torque magnitude at this timestep (N·m). */
+  gravityGradientTorqueMag?: number;
 }
 
 export function runFullSimulation(
@@ -715,6 +793,18 @@ export function runFullSimulation(
         momentumError,
         thermalTemperatureDeg: state.thermalState?.currentTemperatureDeg,
         stiffnessMultiplier: state.thermalState?.stiffnessMultiplier,
+        gravityGradientTorqueMag: params.gravityGradientEnabled !== false
+          ? (() => {
+              const altM = params.orbitAltitudeM ?? 400_000;
+              const gg = computeGravityGradientTorque(
+                bodyInertiaDiag(params),
+                state._bodyQ ?? qIdentity(),
+                state.time,
+                altM,
+              );
+              return Math.sqrt(gg.x * gg.x + gg.y * gg.y + gg.z * gg.z);
+            })()
+          : undefined,
       });
     }
 

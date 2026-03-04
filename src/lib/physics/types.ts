@@ -73,6 +73,10 @@ export interface SimulationParams {
   bodyHeight: number;        // m (Z dimension / up / long edge)
   hinge: HingeParams;
   timeStep: number;          // seconds
+  /** Orbit altitude above Earth's surface in metres (default: 400,000 m = 400 km LEO). */
+  orbitAltitudeM?: number;
+  /** Whether to include gravity gradient torque in body dynamics (default: true). */
+  gravityGradientEnabled?: boolean;
   // ── Optional thermal model parameters ──
   thermal?: ThermalParams;
 }
@@ -152,4 +156,6 @@ export const DEFAULT_PARAMS: SimulationParams = {
     deployDuration: 2.0,
   },
   timeStep: 1 / 60,
+  orbitAltitudeM: 400_000,       // 400 km LEO
+  gravityGradientEnabled: true,
 };
