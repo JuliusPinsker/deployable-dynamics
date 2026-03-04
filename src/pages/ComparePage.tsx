@@ -132,6 +132,25 @@ export default function ComparePage() {
     });
   }, [allSimData]);
 
+  // Gravity gradient disturbance torque
+  const ggTorqueData = useMemo(() => {
+    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
+    return configs.map((c, i) => {
+      const frames = allSimData[c];
+      let maxGG = 0;
+      for (const f of frames) {
+        if (f.gravityGradientTorqueMag !== undefined && f.gravityGradientTorqueMag > maxGG) {
+          maxGG = f.gravityGradientTorqueMag;
+        }
+      }
+      return {
+        name: CONFIGURATIONS[i].shortName,
+        value: Number((maxGG * 1e6).toFixed(4)), // convert to µN·m
+        fill: COLORS[i],
+      };
+    });
+  }, [allSimData]);
+
   // Thermal comparison: radiation-balance model with per-config panel area differentiation
   const thermalComparisonData = useMemo(() => {
     // Physical constants (SI)
@@ -321,6 +340,27 @@ export default function ComparePage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="name" tick={{ fontSize: 10 }} />
                   <YAxis tick={{ fontSize: 11 }} />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Bar dataKey="value" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ChartContainer>
+            </CardContent>
+          </Card>
+
+          {/* Gravity Gradient Disturbance Torque */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Peak Gravity Gradient Disturbance (µN·m)</CardTitle>
+              <p className="text-xs text-muted-foreground mt-1">
+                τ_gg = (3μ/R³)(I_z − I_y)r̂_y·r̂_z — varies by config inertia distribution
+              </p>
+            </CardHeader>
+            <CardContent>
+              <ChartContainer config={chartConfig} className="h-[250px]">
+                <BarChart data={ggTorqueData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'µN·m', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
                   <ChartTooltip content={<ChartTooltipContent />} />
                   <Bar dataKey="value" radius={[4, 4, 0, 0]} />
                 </BarChart>
