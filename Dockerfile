@@ -29,8 +29,8 @@ RUN npm install --no-audit --no-fund
 # Install Playwright browsers (and necessary platform dependencies)
 RUN npx playwright install --with-deps || true
 
-# Expose Vite dev server (port 8080 as configured in vite.config.ts)
-EXPOSE 8080
+# Expose Vite dev server
+EXPOSE 5173
 
 # Mount project directory at runtime to enable live edits
 CMD ["npm", "run", "dev"]
