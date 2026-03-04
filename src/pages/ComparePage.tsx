@@ -10,6 +10,11 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, BarChart, Bar, ResponsiveContainer } from 'recharts';
+import {
+  initThermalState,
+  stepThermalState,
+  DEFAULT_THERMAL_PARAMS,
+} from '@/lib/physics/thermalModel';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
 const chartConfig: ChartConfig = {
@@ -24,6 +29,7 @@ const COLORS = ['hsl(210, 100%, 55%)', 'hsl(168, 70%, 45%)', 'hsl(35, 95%, 55%)'
 export default function ComparePage() {
   const [stuckPanels, setStuckPanels] = useState<number[]>([]);
   const [anomaly, setAnomaly] = useState('none');
+  const [betaAngle, setBetaAngle] = useState(0); // degrees, 0 = equatorial
 
   const stuckConfig = useMemo(() => {
     switch (anomaly) {
@@ -125,6 +131,81 @@ export default function ComparePage() {
       };
     });
   }, [allSimData]);
+
+  // Thermal comparison: radiation-balance model with per-config panel area differentiation
+  const thermalComparisonData = useMemo(() => {
+    // Physical constants (SI)
+    const SOLAR_CONSTANT = 1361;   // W/m² — solar irradiance at 1 AU
+    const EARTH_IR = 237;          // W/m² — Earth IR emission
+    const ALBEDO = 0.3;            // Earth albedo factor
+    const STEFAN = 5.67e-8;        // Stefan-Boltzmann constant
+
+    // Per-configuration physical properties
+    // area_m2: total solar panel area in m²
+    // mass_kg: panel assembly mass (more panels = more thermal mass)
+    const configProps = {
+      'long-edge':           { area_m2: 0.006,  mass_kg: 0.08, panelCount: 2 },
+      'double-long-edge':    { area_m2: 0.012,  mass_kg: 0.16, panelCount: 4 },
+      'short-edge':          { area_m2: 0.002,  mass_kg: 0.04, panelCount: 2 },
+      'short-edge-long-edge':{ area_m2: 0.009,  mass_kg: 0.12, panelCount: 3 },
+    };
+
+    // GaAs solar cell optical properties (space-grade)
+    const alpha_solar = 0.92;   // solar absorptivity
+    const epsilon_ir  = 0.85;   // IR emissivity
+
+    // Beta angle effect: eclipse fraction and sunlight factor
+    const betaRad = Math.abs(betaAngle) * Math.PI / 180;
+    // At beta=0 → eclipseFraction≈0.36 (36% in shadow), at beta=75° → ~0% eclipse
+    const eclipseFraction = Math.max(0, 0.36 * Math.cos(betaRad));
+    const sunFraction = 1 - eclipseFraction;
+    // Effective cosine factor for solar incidence averaged over sunlit arc
+    const cosSun = Math.cos(betaRad) * 0.637; // mean cosine over illuminated half-orbit
+
+    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
+
+    return configs.map((c, i) => {
+      const { area_m2, mass_kg } = configProps[c];
+
+      // Radiative equilibrium temperature (sunlit):
+      // alpha * G_eff * A = epsilon * sigma * A * T^4
+      // G_eff = SOLAR_CONSTANT * cosSun * sunFraction + EARTH_IR * eclipseFraction * 0.5 + ALBEDO * SOLAR_CONSTANT * 0.1
+      const G_solar   = SOLAR_CONSTANT * cosSun * sunFraction;
+      const G_earthIR = EARTH_IR * eclipseFraction * 0.5;
+      const G_albedo  = ALBEDO * SOLAR_CONSTANT * 0.12;
+      const G_eff     = alpha_solar * (G_solar + G_albedo) + G_earthIR * epsilon_ir;
+
+      // Equilibrium: G_eff = epsilon * sigma * T^4  →  T = (G_eff / (epsilon * sigma))^0.25
+      const T_eq_sunlit_K = Math.pow(G_eff / (epsilon_ir * STEFAN), 0.25);
+      const T_eq_sunlit_C = T_eq_sunlit_K - 273.15;
+
+      // Eclipse equilibrium (no solar input, just Earth IR + radiation to deep space)
+      const G_eclipse = epsilon_ir * EARTH_IR * 0.5;
+      const T_eq_eclipse_K = Math.pow(G_eclipse / (epsilon_ir * STEFAN), 0.25);
+      const T_eq_eclipse_C = T_eq_eclipse_K - 273.15;
+
+      // Thermal mass effect: larger panel assemblies lag more → peak is slightly lower
+      // Cp_steel ≈ 500 J/(kg·K), orbit period ≈ 5520 s
+      const thermalTimeConst = mass_kg * 500 / (epsilon_ir * STEFAN * 4 * T_eq_sunlit_K ** 3 * area_m2);
+      const lagFactor = 1 - Math.exp(-2700 / Math.max(thermalTimeConst, 300)); // sunlit arc ~2700 s
+      const peakTemp_C = T_eq_eclipse_C + (T_eq_sunlit_C - T_eq_eclipse_C) * lagFactor;
+
+      // Spring stiffness: k(T)/k0 = 1 - alpha_E * (T - T_ref)
+      // alpha_E = 3e-4 K^-1, T_ref = 20°C, clamped [0.85, 1.15]
+      const ALPHA_E = 3e-4;
+      const T_ref = 20;
+      const stiffnessRaw = 1.0 - ALPHA_E * (peakTemp_C - T_ref);
+      const stiffnessPct = Math.round(Math.min(Math.max(stiffnessRaw, 0.85), 1.15) * 100);
+
+      return {
+        name: CONFIGURATIONS[i].shortName,
+        peakTemp: Math.round(peakTemp_C),
+        stiffnessPct,
+        eclipseTemp: Math.round(T_eq_eclipse_C),
+        fill: COLORS[i],
+      };
+    });
+  }, [betaAngle]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -289,6 +370,144 @@ export default function ComparePage() {
                     })}
                   </tbody>
                 </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Thermal Environment Impact */}
+          <Card className="col-span-1 lg:col-span-2">
+            <CardHeader>
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                  <CardTitle className="text-sm font-semibold">
+                    Thermal Environment Impact on Deployment Spring Stiffness
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Radiative equilibrium model — GaAs panels, 400 km LEO orbit (α=0.92, ε=0.85)
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">Solar Beta Angle:</span>
+                  <input
+                    type="range"
+                    min={-75}
+                    max={75}
+                    step={5}
+                    value={betaAngle}
+                    onChange={e => setBetaAngle(Number(e.target.value))}
+                    className="w-36 accent-primary"
+                  />
+                  <span className="text-xs font-mono w-12 text-right font-semibold">{betaAngle > 0 ? '+' : ''}{betaAngle}°</span>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+
+                {/* Left: Peak Temperature */}
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-3">
+                    Peak Sunlit Temperature (°C) — β = {betaAngle > 0 ? '+' : ''}{betaAngle}°
+                  </p>
+                  <ChartContainer config={chartConfig} className="h-[240px]">
+                    <BarChart data={thermalComparisonData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        domain={[-60, 100]}
+                        label={{ value: '°C', angle: -90, position: 'insideLeft', offset: 10, style: { fontSize: 11 } }}
+                      />
+                      <ChartTooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0].payload;
+                          return (
+                            <div className="bg-popover border border-border rounded p-2 text-xs shadow">
+                              <p className="font-semibold mb-1">{d.name}</p>
+                              <p>Peak sunlit: <span className="font-mono font-bold text-orange-400">{d.peakTemp}°C</span></p>
+                              <p>Eclipse min: <span className="font-mono">{d.eclipseTemp}°C</span></p>
+                              <p>ΔT: <span className="font-mono">{d.peakTemp - d.eclipseTemp}°C</span></p>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar dataKey="peakTemp" radius={[4, 4, 0, 0]}>
+                        {thermalComparisonData.map((entry, index) => (
+                          <rect key={index} fill={entry.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ChartContainer>
+                  <div className="flex gap-4 mt-2 justify-center flex-wrap">
+                    {thermalComparisonData.map((d, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: d.fill }} />
+                        <span>{d.name}: <span className="font-mono font-semibold text-foreground">{d.peakTemp}°C</span></span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Right: Stiffness degradation */}
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-3">
+                    Spring Stiffness k(T)/k₀ (%) at Peak Temperature
+                  </p>
+                  <ChartContainer config={chartConfig} className="h-[240px]">
+                    <BarChart data={thermalComparisonData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                      <YAxis
+                        tick={{ fontSize: 10 }}
+                        domain={[80, 105]}
+                        label={{ value: '%', angle: -90, position: 'insideLeft', offset: 10, style: { fontSize: 11 } }}
+                      />
+                      <ChartTooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0].payload;
+                          return (
+                            <div className="bg-popover border border-border rounded p-2 text-xs shadow">
+                              <p className="font-semibold mb-1">{d.name}</p>
+                              <p>Stiffness: <span className="font-mono font-bold text-blue-400">{d.stiffnessPct}%</span></p>
+                              <p className="text-muted-foreground">Degradation: -{100 - d.stiffnessPct}%</p>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar dataKey="stiffnessPct" radius={[4, 4, 0, 0]}>
+                        {thermalComparisonData.map((entry, index) => (
+                          <rect key={index} fill={entry.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ChartContainer>
+                  <div className="flex gap-4 mt-2 justify-center flex-wrap">
+                    {thermalComparisonData.map((d, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: d.fill }} />
+                        <span>{d.name}: <span className="font-mono font-semibold text-foreground">{d.stiffnessPct}%</span></span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Insight row */}
+              <div className="mt-4 pt-4 border-t border-border grid grid-cols-2 md:grid-cols-4 gap-3">
+                {thermalComparisonData.map((d, i) => (
+                  <div key={i} className="bg-muted/40 rounded-lg p-3 text-center">
+                    <div className="text-xs text-muted-foreground mb-1">{d.name}</div>
+                    <div className="text-lg font-bold font-mono" style={{ color: d.fill }}>
+                      {d.peakTemp}°C
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      k = {d.stiffnessPct}% · ΔT = {d.peakTemp - d.eclipseTemp}°C
+                    </div>
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>
