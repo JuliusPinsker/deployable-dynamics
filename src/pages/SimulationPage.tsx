@@ -24,6 +24,7 @@ export default function SimulationPage() {
     createInitialState(config, thermalEnabled ? thermalParams : undefined)
   );
   const [speed, setSpeed] = useState(1);
+  const [ggTorqueMag, setGgTorqueMag] = useState<number | undefined>(undefined);
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
@@ -75,6 +76,23 @@ export default function SimulationPage() {
         newState = stepSimulation(newState, configRef.current, currentParams);
       }
       setState(newState);
+
+      // Compute GG torque for telemetry display
+      const MU = 3.986004418e14;
+      const R_EARTH = 6.371e6;
+      const altM = 400_000;
+      const R = R_EARTH + altM;
+      const Ixx = (1/12) * 4.0 * (0.3405**2 + 0.1**2);
+      const Iyy = (1/12) * 4.0 * (0.1**2 + 0.1**2);
+      const Izz = (1/12) * 4.0 * (0.1**2 + 0.3405**2);
+      const factor = (3 * MU) / (R**3);
+      // Max GG torque at 45° nadir angle: each component max = factor * |ΔI| * 0.5
+      const maxGG = factor * Math.max(
+        Math.abs(Izz - Iyy),
+        Math.abs(Ixx - Izz),
+        Math.abs(Iyy - Ixx),
+      ) * 0.5;
+      setGgTorqueMag(maxGG);
     } else if (thermalEnabledRef.current && st.thermalState && st.thermalParams) {
       // Post-deployment: keep advancing thermal state only
       // so the user can watch the full eclipse/sunlight cycle
@@ -177,7 +195,7 @@ export default function SimulationPage() {
             thermalEnabled={thermalEnabled}
             thermalState={state.thermalState}
           />
-          <TelemetryOverlay state={state} />
+          <TelemetryOverlay state={state} gravityGradientTorqueMag={ggTorqueMag} />
 
           {thermalEnabled && (
             <div style={{

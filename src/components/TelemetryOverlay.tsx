@@ -3,6 +3,7 @@ import type { SpacecraftState } from '@/lib/physics/types';
 
 interface TelemetryOverlayProps {
   state: SpacecraftState;
+  gravityGradientTorqueMag?: number;
 }
 
 function formatNum(n: number, decimals = 3): string {
@@ -13,7 +14,7 @@ function toDegPerSec(rad: number): string {
   return formatNum((rad * 180) / Math.PI, 2);
 }
 
-export default function TelemetryOverlay({ state }: TelemetryOverlayProps) {
+export default function TelemetryOverlay({ state, gravityGradientTorqueMag }: TelemetryOverlayProps) {
   const maxContact = Math.max(...state.panels.map(p => p.contactForce), 0);
   const avgAngle = state.panels.reduce((s, p) => s + p.angle, 0) / state.panels.length;
   const deployPct = Math.min(100, (avgAngle / (Math.PI / 2)) * 100);
@@ -21,7 +22,7 @@ export default function TelemetryOverlay({ state }: TelemetryOverlayProps) {
   return (
     <div className="absolute top-3 left-3 bg-card/90 backdrop-blur-md border border-border rounded-lg p-3 font-mono text-xs space-y-2 min-w-[200px]">
       <div className="text-muted-foreground text-[10px] uppercase tracking-wider mb-1">Live Telemetry</div>
-      
+
       <div className="space-y-1">
         <div className="flex justify-between">
           <span className="text-muted-foreground">ωx</span>
@@ -53,6 +54,15 @@ export default function TelemetryOverlay({ state }: TelemetryOverlayProps) {
       <div className="border-t border-border pt-1 flex justify-between">
         <span className="text-muted-foreground">Contact F</span>
         <span className={maxContact > 10 ? 'text-destructive' : ''}>{formatNum(maxContact, 1)} N</span>
+      </div>
+
+      <div className="border-t border-border pt-1 flex justify-between">
+        <span className="text-muted-foreground">GG Torque</span>
+        <span className="text-yellow-400">
+          {gravityGradientTorqueMag !== undefined
+            ? `${(gravityGradientTorqueMag * 1e6).toFixed(3)} µN·m`
+            : '—'}
+        </span>
       </div>
 
       <div className="border-t border-border pt-1 flex justify-between">
