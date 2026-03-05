@@ -17,6 +17,7 @@ import {
   type Vector3,
   type Quaternion,
   type ThermalParams,
+  type FlexParams,
   DEFAULT_PARAMS,
 } from './types';
 
@@ -26,6 +27,11 @@ import {
   stepThermalState,
   applyThermalStiffness,
 } from './thermalModel';
+import {
+  initFlexState,
+  stepFlexState,
+  DEFAULT_FLEX_PARAMS,
+} from './flexModel';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Vector3 helpers
@@ -467,17 +473,20 @@ function createInitialPanels(config: ConfigType): PanelState[] {
 export function createInitialState(
   config: ConfigType,
   thermalParams?: ThermalParams,
+  flexParams?: FlexParams,
 ): SpacecraftState {
+  const panels = createInitialPanels(config);
   return {
     angularVelocity: { x: 0, y: 0, z: 0 },
     angularAcceleration: { x: 0, y: 0, z: 0 },
     orientation: { x: 0, y: 0, z: 0 },
-    panels: createInitialPanels(config),
+    panels,
     time: 0,
     deploying: false,
     _bodyQ: qIdentity(),
     thermalState: thermalParams ? initThermalState(thermalParams) : undefined,
     thermalParams: thermalParams,
+    flexState: flexParams ? panels.map(() => initFlexState(flexParams)) : undefined,
   };
 }
 
@@ -522,6 +531,7 @@ export function stepSimulation(
     deployedNew: boolean;
     contactForceNew: number;
     hingeTorque: number;
+    thetaDDot: number;     // angular acceleration for flex model
     aBody: Vector3;        // physical hinge axis in body frame (rot-rotated)
     aLocal: Vector3;       // raw hinge axis in local frame (before rot)
     qMount: Quaternion;    // mounting rotation quaternion from spec.rot
@@ -535,7 +545,7 @@ export function stepSimulation(
     if (panel.stuck) {
       updates.push({
         thetaNew: panel.angle, omegaRelNew: 0, deployedNew: panel.deployed,
-        contactForceNew: 0, hingeTorque: 0,
+        contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
         aBody: v3(0, 0, 0), aLocal: v3(0, 0, 0), qMount: qIdentity(),
       });
       continue;
@@ -569,15 +579,16 @@ export function stepSimulation(
     });
 
     let thetaNew: number, omegaRelNew: number, deployedNew: boolean;
-    let contactForceNew: number, hingeTorque: number;
+    let contactForceNew: number, hingeTorque: number, thetaDDot: number;
 
     if (!stage1Complete) {
-      // ── Stage 2 panel waiting — hold perfectly still ───────────────────────
+      // ── Stage 2 panel waiting — hold perfectly still ───────────────────
       thetaNew = theta;
       omegaRelNew = 0;
       deployedNew = false;
       contactForceNew = 0;
       hingeTorque = 0;
+      thetaDDot = 0;
 
     } else if (deployDuration > 0) {
       // ── Kinematic ease-out deployment (stage-aware) ────────────────────────
@@ -600,7 +611,7 @@ export function stepSimulation(
       const Ieff = 1 / v3Dot(alphaUnit, aWorld);
 
       // Equivalent torque τ = I_eff · θ̈  (reaction couples to body)
-      const thetaDDot = (omegaRelNew - omegaRel) / dt;
+      thetaDDot = (omegaRelNew - omegaRel) / dt;
       hingeTorque = Ieff * thetaDDot;
       contactForceNew = 0;
 
@@ -633,7 +644,7 @@ export function stepSimulation(
       const alphaPanelWorld = applyInverseInertia(Ip, qPanel, tauVecWorld);
 
       // Project onto hinge axis for 1-DOF constraint:  θ̈ = α_panel · â
-      const thetaDDot = v3Dot(alphaPanelWorld, aWorld);
+      thetaDDot = v3Dot(alphaPanelWorld, aWorld);
 
       // Semi-implicit Euler (velocity first)
       omegaRelNew = omegaRel + thetaDDot * dt;
@@ -644,13 +655,31 @@ export function stepSimulation(
       if (deployedNew) { thetaNew = stopAngle; omegaRelNew = 0; }
     }
 
-    updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, aBody, aLocal, qMount });
+    updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, thetaDDot, aBody, aLocal, qMount });
 
     // Accumulate equal-and-opposite reaction on body:  τ_body += −τ · â_world
     const aWorld2 = qRotateVec(qBody, aBody);
     bodyTorqueWorld.x -= hingeTorque * aWorld2.x;
     bodyTorqueWorld.y -= hingeTorque * aWorld2.y;
     bodyTorqueWorld.z -= hingeTorque * aWorld2.z;
+  }
+
+  // ── Phase 1b: Update flexible panel dynamics (if enabled) ─────────────────
+  // Step the Craig-Bampton modal dynamics for each panel using thetaDDot
+  const flexParams = params.flex;
+  let newFlexState = state.flexState;
+  if (flexParams && newFlexState) {
+    newFlexState = newFlexState.map((fs, i) => {
+      const up = updates[i];
+      return stepFlexState(
+        fs,
+        flexParams,
+        up.thetaDDot,
+        dt,
+        specs[i].size[0], // panel length
+        params.panelMass,
+      );
+    });
   }
 
   // ── Phase 2: body rotational dynamics (RK4 + conservation correction) ─────
@@ -797,6 +826,9 @@ export function stepSimulation(
     const aWorldNew = qRotateVec(qBodyNew, up.aBody);
     const omegaPanelNew = v3Add(omegaBodyNew, v3Scale(aWorldNew, up.omegaRelNew));
 
+    // Get tip deflection from flex state (if enabled)
+    const tipDeflectionDeg = newFlexState?.[i]?.tipDeflectionDeg;
+
     return {
       ...panel,
       angle: up.thetaNew,
@@ -805,6 +837,7 @@ export function stepSimulation(
       contactForce: up.contactForceNew,
       _q: qPanelNew,
       _omega: omegaPanelNew,
+      tipDeflectionDeg,
     };
   });
 
@@ -822,6 +855,7 @@ export function stepSimulation(
     _bodyQ: qBodyNew,
     thermalState,
     thermalParams,
+    flexState: newFlexState,
   };
 }
 
@@ -849,6 +883,8 @@ export interface SimulationFrame {
    * angular momentum exchange — body Euler-angle change from t=0 to current frame.
    */
   attitudeCouplingDeg?: number;
+  /** Panel tip deflections in degrees (undefined if flex model inactive). */
+  tipDeflectionDeg?: number[];
 }
 
 export function runFullSimulation(
@@ -857,7 +893,7 @@ export function runFullSimulation(
   maxTime: number = 10,
   stuckPanels: number[] = [],
 ): SimulationFrame[] {
-  let state = createInitialState(config, params.thermal);
+  let state = createInitialState(config, params.thermal, params.flex);
   state.deploying = true;
 
   // Apply stuck panels
@@ -934,6 +970,9 @@ export function runFullSimulation(
             })()
           : undefined,
         attitudeCouplingDeg,
+        tipDeflectionDeg: state.flexState
+          ? state.panels.map(p => p.tipDeflectionDeg ?? 0)
+          : undefined,
       });
     }
 
