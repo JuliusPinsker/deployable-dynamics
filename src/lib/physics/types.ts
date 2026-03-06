@@ -1,8 +1,12 @@
 // Physics engine types for CubeSat solar panel deployment simulation
 
 import type { ThermalState, ThermalParams } from './thermalModel';
+import type { FlexParams, FlexState } from './flexModel';
+import type { OrbitalParams } from './orbitalTorques';
 
 export type { ThermalState, ThermalParams } from './thermalModel';
+export type { FlexParams, FlexState } from './flexModel';
+export type { OrbitalParams } from './orbitalTorques';
 
 export interface Vector3 {
   x: number;
@@ -33,6 +37,14 @@ export interface HingeParams {
   // Optional: kinematic deployment duration (seconds). When provided, panels follow a deterministic ease-out
   // kinematic profile (useful for precise animation timing). If omitted, the hinge is physics-driven.
   deployDuration?: number;
+  // Hinge model selection: 'linear' (default) or 'bistable' (tape-spring double-well potential)
+  hingeModel?: 'linear' | 'bistable';
+  // Bistable tape-spring parameters (only used when hingeModel === 'bistable')
+  // Reference: Seffen & Pellegrino 1999 (Proc. R. Soc. A), Mallikarachchi & Pellegrino 2011 (AIAA J.)
+  bistability?: {
+    bistabilityCoeff: number;    // A coefficient (N·m/rad⁴) — shapes double-well potential
+    snapThroughAngle: number;    // θ_snap in radians — angle of peak energy barrier
+  };
 }
 
 export interface PanelState {
@@ -46,6 +58,8 @@ export interface PanelState {
   // ── Internal 3D state (engine-managed, derived each step) ──
   _q?: Quaternion;           // panel orientation quaternion (world frame)
   _omega?: Vector3;          // panel angular velocity (world frame, 3D)
+  // ── Flexible panel dynamics (optional) ──
+  tipDeflectionDeg?: number; // tip deflection as equivalent angle error (degrees)
 }
 
 export interface SpacecraftState {
@@ -60,6 +74,8 @@ export interface SpacecraftState {
   // ── Thermal model state (optional) ──
   thermalState?: ThermalState;
   thermalParams?: ThermalParams;
+  // ── Flexible panel dynamics state (optional, one per panel) ──
+  flexState?: FlexState[];
 }
 
 export interface SimulationParams {
@@ -73,8 +89,16 @@ export interface SimulationParams {
   bodyHeight: number;        // m (Z dimension / up / long edge)
   hinge: HingeParams;
   timeStep: number;          // seconds
+  /** Orbit altitude above Earth's surface in metres (default: 400,000 m = 400 km LEO). */
+  orbitAltitudeM?: number;
+  /** Whether to include gravity gradient torque in body dynamics (default: true). */
+  gravityGradientEnabled?: boolean;
   // ── Optional thermal model parameters ──
   thermal?: ThermalParams;
+  // ── Optional flexible panel dynamics parameters ──
+  flex?: FlexParams;
+  // ── Optional orbital environment parameters ──
+  orbitalParams?: OrbitalParams;
 }
 
 export type ConfigType =
@@ -152,4 +176,6 @@ export const DEFAULT_PARAMS: SimulationParams = {
     deployDuration: 2.0,
   },
   timeStep: 1 / 60,
+  orbitAltitudeM: 400_000,       // 400 km LEO
+  gravityGradientEnabled: true,
 };
