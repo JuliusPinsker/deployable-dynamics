@@ -17,6 +17,8 @@ import {
   type Vector3,
   type Quaternion,
   type ThermalParams,
+  type FlexParams,
+  type OrbitalParams,
   DEFAULT_PARAMS,
 } from './types';
 
@@ -26,6 +28,20 @@ import {
   stepThermalState,
   applyThermalStiffness,
 } from './thermalModel';
+import {
+  initFlexState,
+  stepFlexState,
+  DEFAULT_FLEX_PARAMS,
+} from './flexModel';
+import {
+  meanMotion,
+  gravityGradientTorque as ggTorqueCalc,
+  srpTorque as srpTorqueCalc,
+  updateNadirVector,
+  initNadirWorld,
+  initSunWorld,
+  DEFAULT_ORBITAL_PARAMS,
+} from './orbitalTorques';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Vector3 helpers
@@ -177,6 +193,42 @@ function applyInverseInertia(Idiag: Vector3, q: Quaternion, torqueWorld: Vector3
 /** I_body · ω  (diagonal body frame). */
 function applyInertia(Idiag: Vector3, w: Vector3): Vector3 {
   return { x: Idiag.x * w.x, y: Idiag.y * w.y, z: Idiag.z * w.z };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gravity gradient torque (legacy wrapper — uses orbitalTorques module)
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Compute the gravity gradient torque acting on the spacecraft body.
+ * Legacy wrapper for backward compatibility — delegates to orbitalTorques module.
+ *
+ * @param Ib   Diagonal body principal inertia tensor [Ixx, Iyy, Izz] (kg·m²)
+ * @param qBody Current body orientation quaternion (world frame)
+ * @param t    Current simulation time (seconds)
+ * @param altitudeM Orbit altitude above Earth surface (metres)
+ * @returns Gravity gradient torque vector in WORLD frame (N·m)
+ */
+function computeGravityGradientTorque(
+  Ib: Vector3,
+  qBody: Quaternion,
+  t: number,
+  altitudeM: number,
+): Vector3 {
+  // Compute mean motion and nadir vector for equatorial orbit
+  const altitudeKm = altitudeM / 1000;
+  const n = meanMotion(altitudeKm);
+
+  // Nadir unit vector in world frame: points from spacecraft toward Earth centre.
+  // For equatorial circular orbit in our convention (X=right, Y=forward, Z=up),
+  // nadir rotates in the Y-Z plane as the satellite orbits.
+  const nadirWorld: Vector3 = {
+    x: 0,
+    y: -Math.sin(n * t),
+    z: -Math.cos(n * t),
+  };
+
+  // Delegate to orbital torques module
+  return ggTorqueCalc(qBody, Ib, nadirWorld, n);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -402,17 +454,20 @@ function createInitialPanels(config: ConfigType): PanelState[] {
 export function createInitialState(
   config: ConfigType,
   thermalParams?: ThermalParams,
+  flexParams?: FlexParams,
 ): SpacecraftState {
+  const panels = createInitialPanels(config);
   return {
     angularVelocity: { x: 0, y: 0, z: 0 },
     angularAcceleration: { x: 0, y: 0, z: 0 },
     orientation: { x: 0, y: 0, z: 0 },
-    panels: createInitialPanels(config),
+    panels,
     time: 0,
     deploying: false,
     _bodyQ: qIdentity(),
     thermalState: thermalParams ? initThermalState(thermalParams) : undefined,
     thermalParams: thermalParams,
+    flexState: flexParams ? panels.map(() => initFlexState(flexParams)) : undefined,
   };
 }
 
@@ -442,6 +497,12 @@ export function stepSimulation(
   const qBody = state._bodyQ ? { ...state._bodyQ } : qFromEuler(state.orientation);
   const omegaBody: Vector3 = { ...state.angularVelocity }; // world-frame
 
+  // ── Conservation reference: capture H_total before panel updates ──────────
+  // Following Hughes (1986) Ch. 3 and Wie (2008) §8.2:
+  //   H_total = I_body·ω_body + Σ_i [I_panel_i · (ω_body + θ̇_i · â_i)]
+  // We track H₀ so we can enforce conservation after updating panels.
+  const H0 = computeTotalAngularMomentum(state, config, params);
+
   // ── Phase 1: per-panel hinge dynamics & accumulate body torque ─────────────
   const bodyTorqueWorld: Vector3 = { x: 0, y: 0, z: 0 };
 
@@ -451,6 +512,7 @@ export function stepSimulation(
     deployedNew: boolean;
     contactForceNew: number;
     hingeTorque: number;
+    thetaDDot: number;     // angular acceleration for flex model
     aBody: Vector3;        // physical hinge axis in body frame (rot-rotated)
     aLocal: Vector3;       // raw hinge axis in local frame (before rot)
     qMount: Quaternion;    // mounting rotation quaternion from spec.rot
@@ -464,8 +526,21 @@ export function stepSimulation(
     if (panel.stuck) {
       updates.push({
         thetaNew: panel.angle, omegaRelNew: 0, deployedNew: panel.deployed,
-        contactForceNew: 0, hingeTorque: 0,
+        contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
         aBody: v3(0, 0, 0), aLocal: v3(0, 0, 0), qMount: qIdentity(),
+      });
+      continue;
+    }
+
+    // Once deployed, hold panel at stop angle — no further hinge dynamics needed
+    if (panel.deployed) {
+      const qMountD = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
+      const aLocalD = hingeAxisUnit(spec.axis);
+      const aBodyD = qRotateVec(qMountD, aLocalD);
+      updates.push({
+        thetaNew: panel.angle, omegaRelNew: 0, deployedNew: true,
+        contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
+        aBody: aBodyD, aLocal: aLocalD, qMount: qMountD,
       });
       continue;
     }
@@ -498,15 +573,16 @@ export function stepSimulation(
     });
 
     let thetaNew: number, omegaRelNew: number, deployedNew: boolean;
-    let contactForceNew: number, hingeTorque: number;
+    let contactForceNew: number, hingeTorque: number, thetaDDot: number;
 
     if (!stage1Complete) {
-      // ── Stage 2 panel waiting — hold perfectly still ───────────────────────
+      // ── Stage 2 panel waiting — hold perfectly still ───────────────────
       thetaNew = theta;
       omegaRelNew = 0;
       deployedNew = false;
       contactForceNew = 0;
       hingeTorque = 0;
+      thetaDDot = 0;
 
     } else if (deployDuration > 0) {
       // ── Kinematic ease-out deployment (stage-aware) ────────────────────────
@@ -529,20 +605,34 @@ export function stepSimulation(
       const Ieff = 1 / v3Dot(alphaUnit, aWorld);
 
       // Equivalent torque τ = I_eff · θ̈  (reaction couples to body)
-      const thetaDDot = (omegaRelNew - omegaRel) / dt;
+      thetaDDot = (omegaRelNew - omegaRel) / dt;
       hingeTorque = Ieff * thetaDDot;
       contactForceNew = 0;
 
     } else {
-      // ── Physics-driven spring-damper hinge (stage-aware) ───────────────────
+      // ── Physics-driven hinge (stage-aware) ─────────────────────────────────
       const h = params.hinge;
       // Use panel-specific max angle as the target stop angle
       const stopAngle = panelMaxAngle;
-      // Apply thermal stiffness multiplier if thermal model is active
-      const effectiveSpringConstant = thermalState && thermalParams
-        ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
-        : h.springConstant;
-      let tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
+
+      let tau: number;
+      if (h.hingeModel === 'bistable' && h.bistability) {
+        // ── Bistable tape-spring double-well potential ────────────────────────
+        // U(θ) = A·θ²·(θ − θ_max)² − τ_preload·θ
+        // τ(θ) = −dU/dθ = −2A·θ·(θ − θ_max)·(2θ − θ_max) + τ_preload
+        // Ref: Seffen & Pellegrino 1999; Mallikarachchi & Pellegrino 2011
+        const A = h.bistability.bistabilityCoeff;
+        tau = -2 * A * theta * (theta - stopAngle) * (2 * theta - stopAngle) + h.preloadTorque;
+      } else {
+        // ── Linear spring-damper (default) ───────────────────────────────────
+        // Apply thermal stiffness multiplier if thermal model is active
+        const effectiveSpringConstant = thermalState && thermalParams
+          ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
+          : h.springConstant;
+        tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
+      }
+
+      // Viscous damping and Coulomb friction (common to both models)
       tau -= h.dampingCoeff * omegaRel;
       tau -= Math.sign(omegaRel) * h.frictionCoeff;
 
@@ -562,7 +652,7 @@ export function stepSimulation(
       const alphaPanelWorld = applyInverseInertia(Ip, qPanel, tauVecWorld);
 
       // Project onto hinge axis for 1-DOF constraint:  θ̈ = α_panel · â
-      const thetaDDot = v3Dot(alphaPanelWorld, aWorld);
+      thetaDDot = v3Dot(alphaPanelWorld, aWorld);
 
       // Semi-implicit Euler (velocity first)
       omegaRelNew = omegaRel + thetaDDot * dt;
@@ -573,7 +663,7 @@ export function stepSimulation(
       if (deployedNew) { thetaNew = stopAngle; omegaRelNew = 0; }
     }
 
-    updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, aBody, aLocal, qMount });
+    updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, thetaDDot, aBody, aLocal, qMount });
 
     // Accumulate equal-and-opposite reaction on body:  τ_body += −τ · â_world
     const aWorld2 = qRotateVec(qBody, aBody);
@@ -582,12 +672,148 @@ export function stepSimulation(
     bodyTorqueWorld.z -= hingeTorque * aWorld2.z;
   }
 
-  // ── Phase 2: body rotational dynamics (RK4) ───────────────────────────────
+  // ── Phase 1b: Update flexible panel dynamics (if enabled) ─────────────────
+  // Step the Craig-Bampton modal dynamics for each panel using thetaDDot
+  const flexParams = params.flex;
+  let newFlexState = state.flexState;
+  if (flexParams && newFlexState) {
+    newFlexState = newFlexState.map((fs, i) => {
+      const up = updates[i];
+      return stepFlexState(
+        fs,
+        flexParams,
+        up.thetaDDot,
+        dt,
+        specs[i].size[0], // panel length
+        params.panelMass,
+      );
+    });
+  }
+
+  // ── Phase 2: body rotational dynamics (RK4 + conservation correction) ─────
   // Integrate spacecraft body attitude using 4th-order Runge-Kutta.
-  // Euler equation: I·α = τ − ω×(I·ω), with external torque from panel hinges.
-  const { qBodyNew, omegaBodyNew } = integrateBodyRK4(
-    qBody, omegaBody, bodyTorqueWorld, Ib, dt,
+  // External torque = hinge reaction torques + gravity gradient disturbance.
+  // Then apply angular-momentum conservation correction as per Hughes (1986) Ch. 3.
+
+  // Compute gravity gradient torque and add to body torque
+  const totalBodyTorqueWorld: Vector3 = { ...bodyTorqueWorld };
+  if (params.gravityGradientEnabled !== false) {
+    const altM = params.orbitAltitudeM ?? 400_000;
+    const ggTorque = computeGravityGradientTorque(Ib, qBody, state.time, altM);
+    totalBodyTorqueWorld.x += ggTorque.x;
+    totalBodyTorqueWorld.y += ggTorque.y;
+    totalBodyTorqueWorld.z += ggTorque.z;
+  }
+
+  // Step 2a: RK4 integration for body (predictor step)
+  const { qBodyNew: qBodyRK4, omegaBodyNew: omegaBodyRK4 } = integrateBodyRK4(
+    qBody, omegaBody, totalBodyTorqueWorld, Ib, dt,
   );
+
+  // Step 2b-2c: Iterative conservation correction
+  // The panel momentum depends on body velocity: H_panel_i = I_i · (ω_body + θ̇_i · â_i)
+  // We need to iterate to solve: ω_body = I_body⁻¹ · (H₀ − H_panels(ω_body))
+  // Start with RK4 prediction and iterate 3 times for convergence.
+
+  let omegaBodyIter = { ...omegaBodyRK4 };
+  const MAX_ITERS = 5;
+
+  for (let iter = 0; iter < MAX_ITERS; iter++) {
+    // Compute panel angular momentum contribution using current body velocity estimate
+    let H_panels: Vector3 = { x: 0, y: 0, z: 0 };
+
+    for (let i = 0; i < state.panels.length; i++) {
+      const panel = state.panels[i];
+      const spec = specs[i];
+      const up = updates[i];
+
+      if (panel.stuck) continue;
+
+      // Panel inertia tensor (diagonal, panel body frame about hinge edge)
+      const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
+
+      // Panel orientation using RK4-predicted body orientation:
+      // q_panel = q_body_RK4 ⊗ q_mount ⊗ q_hinge_local(θ_new)
+      const qHingeNew = qFromAxisAngle(up.aLocal, up.thetaNew);
+      const qPanelNew = qNormalize(qMultiply(qMultiply(qBodyRK4, up.qMount), qHingeNew));
+
+      // Hinge axis in world frame (using RK4-predicted body orientation)
+      const aWorldNew = qRotateVec(qBodyRK4, up.aBody);
+
+      // Panel angular velocity: ω_panel = ω_body_iter + θ̇_new · â_world
+      const omegaPanelNew = v3Add(omegaBodyIter, v3Scale(aWorldNew, up.omegaRelNew));
+
+      // Rotate ω to panel body frame, apply diagonal inertia, rotate back
+      const omegaPanelLocal = qRotateVec(qConjugate(qPanelNew), omegaPanelNew);
+      const HpanelLocal = applyInertia(Ip, omegaPanelLocal);
+      const HpanelWorld = qRotateVec(qPanelNew, HpanelLocal);
+
+      H_panels.x += HpanelWorld.x;
+      H_panels.y += HpanelWorld.y;
+      H_panels.z += HpanelWorld.z;
+    }
+
+    // Enforce conservation — derive body angular velocity
+    // H_body = H_total_initial - H_panels  (for free-float, H_total is conserved)
+    // ω_body_conserved = R_body · I_body_diag^{-1} · R_body^T · H_body
+    const H_body_required: Vector3 = {
+      x: H0.x - H_panels.x,
+      y: H0.y - H_panels.y,
+      z: H0.z - H_panels.z,
+    };
+
+    // Transform H_body to body frame, divide by principal inertia, transform back
+    const H_body_local = qRotateVec(qConjugate(qBodyRK4), H_body_required);
+    const omegaConserved: Vector3 = {
+      x: H_body_local.x / Ib.x,
+      y: H_body_local.y / Ib.y,
+      z: H_body_local.z / Ib.z,
+    };
+    omegaBodyIter = qRotateVec(qBodyRK4, omegaConserved);
+  }
+
+  const omegaConservedWorld = omegaBodyIter;
+
+  // Step 2d: Cross-check RK4 vs conservation — warn if discrepancy > 1%
+  const H0mag = Math.sqrt(H0.x * H0.x + H0.y * H0.y + H0.z * H0.z);
+  const deltaOmega = v3Sub(omegaConservedWorld, omegaBodyRK4);
+  const deltaOmegaMag = Math.sqrt(deltaOmega.x * deltaOmega.x + deltaOmega.y * deltaOmega.y + deltaOmega.z * deltaOmega.z);
+  const omegaRK4Mag = Math.sqrt(omegaBodyRK4.x * omegaBodyRK4.x + omegaBodyRK4.y * omegaBodyRK4.y + omegaBodyRK4.z * omegaBodyRK4.z);
+  const relativeError = omegaRK4Mag > 1e-12 ? deltaOmegaMag / omegaRK4Mag : (H0mag > 1e-12 ? deltaOmegaMag : 0);
+
+  if (relativeError > 0.01 && H0mag > 1e-9) {
+    // Log at debug level — this can happen during high-dynamics phases
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        `[momentum] t=${(state.time + dt).toFixed(3)}s: RK4 vs conservation ` +
+        `Δω/ω = ${(relativeError * 100).toFixed(2)}% (> 1% threshold)`,
+      );
+    }
+  }
+
+  // Step 2e: Apply conservation-derived ω as correction (prevents drift)
+  // Use conserved ω for body dynamics when in free-float (τ_external ≈ 0)
+  // For gravity gradient or other external torques, blend RK4 and conserved values
+  const hasExternalTorque = params.gravityGradientEnabled !== false;
+  let qBodyNew: Quaternion;
+  let omegaBodyNew: Vector3;
+
+  if (!hasExternalTorque || H0mag < 1e-12) {
+    // Pure free-float: use conservation-derived ω directly
+    qBodyNew = qBodyRK4;
+    omegaBodyNew = omegaConservedWorld;
+  } else {
+    // With external torque: use RK4 but apply small conservation correction
+    // to prevent cumulative drift from panel momentum exchange
+    // Blend: 90% RK4 (captures external torque) + 10% conservation correction
+    const blendFactor = 0.1;
+    qBodyNew = qBodyRK4;
+    omegaBodyNew = {
+      x: omegaBodyRK4.x + blendFactor * deltaOmega.x,
+      y: omegaBodyRK4.y + blendFactor * deltaOmega.y,
+      z: omegaBodyRK4.z + blendFactor * deltaOmega.z,
+    };
+  }
 
   // Approximate angular acceleration from finite difference (for telemetry)
   const alphaWorld: Vector3 = v3Scale(v3Sub(omegaBodyNew, omegaBody), 1 / dt);
@@ -608,6 +834,9 @@ export function stepSimulation(
     const aWorldNew = qRotateVec(qBodyNew, up.aBody);
     const omegaPanelNew = v3Add(omegaBodyNew, v3Scale(aWorldNew, up.omegaRelNew));
 
+    // Get tip deflection from flex state (if enabled)
+    const tipDeflectionDeg = newFlexState?.[i]?.tipDeflectionDeg;
+
     return {
       ...panel,
       angle: up.thetaNew,
@@ -616,6 +845,7 @@ export function stepSimulation(
       contactForce: up.contactForceNew,
       _q: qPanelNew,
       _omega: omegaPanelNew,
+      tipDeflectionDeg,
     };
   });
 
@@ -633,6 +863,7 @@ export function stepSimulation(
     _bodyQ: qBodyNew,
     thermalState,
     thermalParams,
+    flexState: newFlexState,
   };
 }
 
@@ -653,6 +884,15 @@ export interface SimulationFrame {
   thermalTemperatureDeg?: number;
   /** Thermal stiffness multiplier (undefined if thermal model inactive). */
   stiffnessMultiplier?: number;
+  /** Gravity gradient torque magnitude at this timestep (N·m). */
+  gravityGradientTorqueMag?: number;
+  /**
+   * Cumulative body attitude rotation (in degrees) caused purely by panel deployment
+   * angular momentum exchange — body Euler-angle change from t=0 to current frame.
+   */
+  attitudeCouplingDeg?: number;
+  /** Panel tip deflections in degrees (undefined if flex model inactive). */
+  tipDeflectionDeg?: number[];
 }
 
 export function runFullSimulation(
@@ -661,7 +901,7 @@ export function runFullSimulation(
   maxTime: number = 10,
   stuckPanels: number[] = [],
 ): SimulationFrame[] {
-  let state = createInitialState(config, params.thermal);
+  let state = createInitialState(config, params.thermal, params.flex);
   state.deploying = true;
 
   // Apply stuck panels
@@ -678,6 +918,9 @@ export function runFullSimulation(
   // ── Angular momentum conservation tracking ─────────────────────────────
   const H0 = computeTotalAngularMomentum(state, config, params);
   const H0mag = Math.sqrt(H0.x * H0.x + H0.y * H0.y + H0.z * H0.z);
+
+  // ── Attitude coupling tracking (cumulative rotation from t=0) ──────────
+  const q0 = state._bodyQ ? { ...state._bodyQ } : qIdentity();
 
   for (let i = 0; i < maxSteps; i++) {
     state = stepSimulation(state, config, params);
@@ -705,6 +948,13 @@ export function runFullSimulation(
 
     // Record every 3rd frame for chart data
     if (i % 3 === 0) {
+      // Compute attitude coupling: rotation angle from initial to current orientation
+      // q_rel = q_current ⊗ q_0* → extract angle: θ = 2·acos(|w|)
+      const qCur = state._bodyQ ?? qIdentity();
+      const qRel = qMultiply(qCur, qConjugate(q0));
+      const attitudeCouplingRad = 2 * Math.acos(Math.min(1, Math.abs(qRel.w)));
+      const attitudeCouplingDeg = (attitudeCouplingRad * 180) / Math.PI;
+
       frames.push({
         time: Math.round(state.time * 1000) / 1000,
         angularVelocity: { ...state.angularVelocity },
@@ -715,6 +965,22 @@ export function runFullSimulation(
         momentumError,
         thermalTemperatureDeg: state.thermalState?.currentTemperatureDeg,
         stiffnessMultiplier: state.thermalState?.stiffnessMultiplier,
+        gravityGradientTorqueMag: params.gravityGradientEnabled !== false
+          ? (() => {
+              const altM = params.orbitAltitudeM ?? 400_000;
+              const gg = computeGravityGradientTorque(
+                bodyInertiaDiag(params),
+                state._bodyQ ?? qIdentity(),
+                state.time,
+                altM,
+              );
+              return Math.sqrt(gg.x * gg.x + gg.y * gg.y + gg.z * gg.z);
+            })()
+          : undefined,
+        attitudeCouplingDeg,
+        tipDeflectionDeg: state.flexState
+          ? state.panels.map(p => p.tipDeflectionDeg ?? 0)
+          : undefined,
       });
     }
 
