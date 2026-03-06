@@ -1,77 +1,109 @@
-# Welcome to your Lovable project
+# deployable-dynamics
 
-## Project info
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](src/)
+[![React](https://img.shields.io/badge/React-18-61dafb?logo=react)](src/)
+[![Three.js](https://img.shields.io/badge/Three.js-r3f-black?logo=threedotjs)](src/components/CubeSatViewer.tsx)
+[![Vite](https://img.shields.io/badge/build-Vite-646cff?logo=vite)](vite.config.ts)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-CSS-38bdf8?logo=tailwindcss)](tailwind.config.ts)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ed?logo=docker)](Dockerfile)
+[![Tests](https://img.shields.io/badge/tests-Playwright%20%2B%20Vitest-green?logo=playwright)](playwright.config.ts)
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+> An interactive 3D web simulator for CubeSat solar panel deployment dynamics. Visualise hinge physics, spacecraft attitude disturbances, and thermal effects across four canonical deployable configurations — all in the browser.
 
-### Spacecraft model
+## What It Does
 
-Default spacecraft is a **3U CubeSat**: Width **100 mm** × Depth **100 mm** × Height **340.5 mm** (W × D × H). Default body mass: **4.0 kg**.
+Deployable Dynamics models the rigid-body rotational dynamics of a 3U CubeSat during solar panel deployment. A physics engine integrates hinge spring-damper equations and propagates attitude disturbances to the spacecraft body in real time. A React Three Fiber 3D viewer renders the satellite with sandwich-panel geometry, configurable hinge rods, and live orientation widgets.
 
-## How can I edit this code?
+## Deployable Configurations
 
-There are several ways of editing your application.
+| Config | Panels | Description |
+|---|---|---|
+| **Long-edge** | 2 | Two 3U panels along the Z-axis; symmetrical — minimal induced rotation |
+| **Double long-edge** | 4 | Two accordion-fold assemblies along long edges; complex sequential dynamics |
+| **Short-edge** | 4 | Four panels on short edges; high tumbling risk if deployment is asynchronous |
+| **Coupled** | 8 | Eight panels in four assemblies combining both attachment types; highest complexity |
 
-**Use Lovable**
+## Physics Engine
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+The engine (`src/lib/physics/engine.ts`) models each hinge as a torsional spring-damper:
 
-Changes made via Lovable will be committed automatically to this repo.
+- **Spring torque**: `τ = k · (θ_stop − θ)` — preloaded torsion spring driving deployment
+- **Damping**: `τ_d = −c · dθ/dt` — viscous damping, tuned for overdamped (~2 s) deployment
+- **Mechanical stop**: rotational contact model (`k_stop`, `c_stop`) prevents overshoot
+- **Coulomb friction**: small static friction term on each hinge
+- **Attitude coupling**: panel angular momentum transfers to spacecraft body via conservation of angular momentum
+- **Thermal model** (`thermalModel.ts`): optional panel temperature simulation affecting hinge behaviour
+- **Kinematic mode**: optional deterministic ease-out profile for precise animation timing
 
-**Use your preferred IDE**
+### Default Spacecraft (3U CubeSat)
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+| Parameter | Value |
+|---|---|
+| Body dimensions | 100 × 100 × 340.5 mm |
+| Body mass | 4.0 kg |
+| Panel mass | 0.3 kg each |
+| Panel thickness | 2.5 mm (sandwich) |
+| Hinge spring constant | 0.02 N·m/rad |
+| Damping coefficient | 0.08 N·m·s/rad |
+| Deployment target | 90° (π/2 rad) |
+| Default deploy duration | ~2.0 s |
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+## App Pages
 
-Follow these steps:
+- **Landing** — project overview and configuration selector
+- **Simulation** — full 3D viewer with real-time physics, telemetry overlay, and parameter controls
+- **Compare** — side-by-side comparison of multiple deployment configurations
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+## Quickstart
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+### Local Development
 
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+git clone https://github.com/JuliusPinsker/deployable-dynamics.git
+cd deployable-dynamics
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+Open [http://localhost:8080](http://localhost:8080).
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Docker
 
-**Use GitHub Codespaces**
+```bash
+docker compose up
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+The app is served on port `8080` inside the container.
 
-## What technologies are used for this project?
+## Tech Stack
 
-This project is built with:
+| Layer | Technology |
+|---|---|
+| UI framework | React 18 + TypeScript |
+| 3D rendering | Three.js via React Three Fiber + Drei |
+| Styling | Tailwind CSS + shadcn/ui |
+| Build | Vite |
+| Testing | Vitest (unit) + Playwright (e2e) |
+| Containerisation | Docker + Docker Compose |
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## Project Structure
 
-## How can I deploy this project?
+```
+src/
+├── components/
+│   ├── CubeSatViewer.tsx   # Three.js 3D model, panels, orientation widgets
+│   └── TelemetryOverlay.tsx # Live simulation telemetry HUD
+├── lib/physics/
+│   ├── engine.ts           # Hinge dynamics + attitude integration
+│   ├── panelLayouts.ts     # Panel geometry per configuration
+│   ├── thermalModel.ts     # Optional thermal state model
+│   └── types.ts            # Simulation types + default parameters
+└── pages/
+    ├── SimulationPage.tsx  # Main simulation view + controls
+    ├── ComparePage.tsx     # Multi-config comparison view
+    └── LandingPage.tsx     # Entry page
+```
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+## License
 
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+MIT — see [LICENSE](LICENSE) if present.
