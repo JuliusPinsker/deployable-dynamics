@@ -551,19 +551,6 @@ export function stepSimulation(
       continue;
     }
 
-    // Once deployed, hold panel at stop angle — no further hinge dynamics needed
-    if (panel.deployed) {
-      const qMountD = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
-      const aLocalD = hingeAxisUnit(spec.axis);
-      const aBodyD = qRotateVec(qMountD, aLocalD);
-      updates.push({
-        thetaNew: panel.angle, omegaRelNew: 0, deployedNew: true,
-        contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
-        aBody: aBodyD, aLocal: aLocalD, qMount: qMountD,
-      });
-      continue;
-    }
-
     // Mounting rotation from spec.rot (transforms local panel frame → body frame)
     const qMount = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
     const aLocal = hingeAxisUnit(spec.axis);        // hinge axis in local frame
@@ -629,29 +616,15 @@ export function stepSimulation(
       contactForceNew = 0;
 
     } else {
-      // ── Physics-driven hinge (stage-aware) ─────────────────────────────────
+      // ── Physics-driven spring-damper hinge (stage-aware) ───────────────────
       const h = params.hinge;
       // Use panel-specific max angle as the target stop angle
       const stopAngle = panelMaxAngle;
-
-      let tau: number;
-      if (h.hingeModel === 'bistable' && h.bistability) {
-        // ── Bistable tape-spring double-well potential ────────────────────────
-        // U(θ) = A·θ²·(θ − θ_max)² − τ_preload·θ
-        // τ(θ) = −dU/dθ = −2A·θ·(θ − θ_max)·(2θ − θ_max) + τ_preload
-        // Ref: Seffen & Pellegrino 1999; Mallikarachchi & Pellegrino 2011
-        const A = h.bistability.bistabilityCoeff;
-        tau = -2 * A * theta * (theta - stopAngle) * (2 * theta - stopAngle) + h.preloadTorque;
-      } else {
-        // ── Linear spring-damper (default) ───────────────────────────────────
-        // Apply thermal stiffness multiplier if thermal model is active
-        const effectiveSpringConstant = thermalState && thermalParams
-          ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
-          : h.springConstant;
-        tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
-      }
-
-      // Viscous damping and Coulomb friction (common to both models)
+      // Apply thermal stiffness multiplier if thermal model is active
+      const effectiveSpringConstant = thermalState && thermalParams
+        ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
+        : h.springConstant;
+      let tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
       tau -= h.dampingCoeff * omegaRel;
       tau -= Math.sign(omegaRel) * h.frictionCoeff;
 
