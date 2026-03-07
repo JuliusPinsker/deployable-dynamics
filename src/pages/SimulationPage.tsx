@@ -19,6 +19,7 @@ export default function SimulationPage() {
 
   const [config, setConfig] = useState<ConfigType>(initialConfig);
   const [thermalEnabled, setThermalEnabled] = useState(false);
+  const [gravityGradientEnabled, setGravityGradientEnabled] = useState(true);
   const [thermalParams, setThermalParams] = useState<ThermalParams>(DEFAULT_THERMAL_PARAMS);
   const [state, setState] = useState<SpacecraftState>(() => 
     createInitialState(config, thermalEnabled ? thermalParams : undefined)
@@ -29,24 +30,20 @@ export default function SimulationPage() {
   const [showLabels, setShowLabels] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
   const params = React.useMemo<SimulationParams>(() => {
-    if (thermalEnabled) {
-      // Switch to physics-driven spring mode so thermal stiffness
-      // changes are physically visible in deployment speed.
-      // deployDuration: 0 disables kinematic ease-out and activates
-      // the spring-damper branch where applyThermalStiffness is called.
-      return {
-        ...DEFAULT_PARAMS,
-        hinge: {
-          ...DEFAULT_PARAMS.hinge,
-          deployDuration: 0,
-          springConstant: 0.12,
-          dampingCoeff: 0.08,
-          preloadTorque: 0.015,
-        },
-      };
-    }
-    return DEFAULT_PARAMS;
-  }, [thermalEnabled]);
+    const base: SimulationParams = thermalEnabled
+      ? {
+          ...DEFAULT_PARAMS,
+          hinge: {
+            ...DEFAULT_PARAMS.hinge,
+            deployDuration: 0,
+            springConstant: 0.12,
+            dampingCoeff: 0.08,
+            preloadTorque: 0.015,
+          },
+        }
+      : { ...DEFAULT_PARAMS };
+    return { ...base, gravityGradientEnabled };
+  }, [thermalEnabled, gravityGradientEnabled]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -77,22 +74,25 @@ export default function SimulationPage() {
       }
       setState(newState);
 
-      // Compute GG torque for telemetry display
-      const MU = 3.986004418e14;
-      const R_EARTH = 6.371e6;
-      const altM = 400_000;
-      const R = R_EARTH + altM;
-      const Ixx = (1/12) * 4.0 * (0.3405**2 + 0.1**2);
-      const Iyy = (1/12) * 4.0 * (0.1**2 + 0.1**2);
-      const Izz = (1/12) * 4.0 * (0.1**2 + 0.3405**2);
-      const factor = (3 * MU) / (R**3);
-      // Max GG torque at 45° nadir angle: each component max = factor * |ΔI| * 0.5
-      const maxGG = factor * Math.max(
-        Math.abs(Izz - Iyy),
-        Math.abs(Ixx - Izz),
-        Math.abs(Iyy - Ixx),
-      ) * 0.5;
-      setGgTorqueMag(maxGG);
+      // Compute GG torque for telemetry display (only when toggle is on)
+      if (currentParams.gravityGradientEnabled) {
+        const MU = 3.986004418e14;
+        const R_EARTH = 6.371e6;
+        const altM = currentParams.orbitAltitudeM ?? 400_000;
+        const R = R_EARTH + altM;
+        const Ixx = (1/12) * currentParams.bodyMass * (currentParams.bodyHeight**2 + currentParams.bodyDepth**2);
+        const Iyy = (1/12) * currentParams.bodyMass * (currentParams.bodyWidth**2 + currentParams.bodyDepth**2);
+        const Izz = (1/12) * currentParams.bodyMass * (currentParams.bodyWidth**2 + currentParams.bodyHeight**2);
+        const factor = (3 * MU) / (R**3);
+        const maxGG = factor * Math.max(
+          Math.abs(Izz - Iyy),
+          Math.abs(Ixx - Izz),
+          Math.abs(Iyy - Ixx),
+        ) * 0.5;
+        setGgTorqueMag(maxGG);
+      } else {
+        setGgTorqueMag(0);
+      }
     } else if (thermalEnabledRef.current && st.thermalState && st.thermalParams) {
       // Post-deployment: keep advancing thermal state only
       // so the user can watch the full eclipse/sunlight cycle
@@ -287,6 +287,11 @@ export default function SimulationPage() {
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Coordinate System</Label>
                 <Switch checked={showAxes} onCheckedChange={setShowAxes} />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">Gravity Gradient</Label>
+                <Switch checked={gravityGradientEnabled} onCheckedChange={setGravityGradientEnabled} />
               </div>
             </CardContent>
           </Card>
