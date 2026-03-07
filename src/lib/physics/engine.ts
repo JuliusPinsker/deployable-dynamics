@@ -18,7 +18,6 @@ import {
   type Quaternion,
   type ThermalParams,
   type FlexParams,
-  type OrbitalParams,
   DEFAULT_PARAMS,
 } from './types';
 
@@ -33,15 +32,6 @@ import {
   stepFlexState,
   DEFAULT_FLEX_PARAMS,
 } from './flexModel';
-import {
-  meanMotion,
-  gravityGradientTorque as ggTorqueCalc,
-  srpTorque as srpTorqueCalc,
-  updateNadirVector,
-  initNadirWorld,
-  initSunWorld,
-  DEFAULT_ORBITAL_PARAMS,
-} from './orbitalTorques';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Vector3 helpers
@@ -196,11 +186,20 @@ function applyInertia(Idiag: Vector3, w: Vector3): Vector3 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Gravity gradient torque (legacy wrapper — uses orbitalTorques module)
+// Gravity gradient torque
 // ─────────────────────────────────────────────────────────────────────────────
 /**
  * Compute the gravity gradient torque acting on the spacecraft body.
- * Legacy wrapper for backward compatibility — delegates to orbitalTorques module.
+ *
+ * For a rigid body in a circular orbit, the gravity gradient torque is:
+ *   τ_gg = (3μ/R³) · r̂_body × (I · r̂_body)
+ *
+ * In body-frame components (diagonal I):
+ *   τ_x = (3μ/R³) · (Izz - Iyy) · r̂_y · r̂_z
+ *   τ_y = (3μ/R³) · (Ixx - Izz) · r̂_z · r̂_x
+ *   τ_z = (3μ/R³) · (Iyy - Ixx) · r̂_x · r̂_y
+ *
+ * Reference: Hughes (1986), Spacecraft Attitude Dynamics, §3.3.
  *
  * @param Ib   Diagonal body principal inertia tensor [Ixx, Iyy, Izz] (kg·m²)
  * @param qBody Current body orientation quaternion (world frame)
@@ -214,9 +213,14 @@ function computeGravityGradientTorque(
   t: number,
   altitudeM: number,
 ): Vector3 {
-  // Compute mean motion and nadir vector for equatorial orbit
-  const altitudeKm = altitudeM / 1000;
-  const n = meanMotion(altitudeKm);
+  // Physical constants (SI)
+  const MU = 3.986004418e14;    // m³/s²  Earth gravitational parameter
+  const R_EARTH = 6.371e6;      // m       Earth mean radius
+
+  // Orbital mechanics
+  const R = R_EARTH + altitudeM;           // orbit radius (m)
+  const T_orbit = 2 * Math.PI * Math.sqrt((R * R * R) / MU); // period (s)
+  const n = (2 * Math.PI) / T_orbit;       // mean motion (rad/s)
 
   // Nadir unit vector in world frame: points from spacecraft toward Earth centre.
   // For equatorial circular orbit in our convention (X=right, Y=forward, Z=up),
@@ -227,8 +231,23 @@ function computeGravityGradientTorque(
     z: -Math.cos(n * t),
   };
 
-  // Delegate to orbital torques module
-  return ggTorqueCalc(qBody, Ib, nadirWorld, n);
+  // Transform nadir to body frame: r̂_body = q* ⊗ r̂_world
+  const nadirBody = qRotateVec(qConjugate(qBody), nadirWorld);
+  const rx = nadirBody.x;
+  const ry = nadirBody.y;
+  const rz = nadirBody.z;
+
+  // Gravity gradient factor: 3μ/R³
+  const factor = (3 * MU) / (R * R * R);
+
+  // Body-frame torque components (Hughes 1986, Eq. 3.3.10)
+  const tauBodyX = factor * (Ib.z - Ib.y) * ry * rz;
+  const tauBodyY = factor * (Ib.x - Ib.z) * rz * rx;
+  const tauBodyZ = factor * (Ib.y - Ib.x) * rx * ry;
+  const tauBody: Vector3 = { x: tauBodyX, y: tauBodyY, z: tauBodyZ };
+
+  // Rotate torque back to world frame for accumulation with hinge torques
+  return qRotateVec(qBody, tauBody);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -532,19 +551,6 @@ export function stepSimulation(
       continue;
     }
 
-    // Once deployed, hold panel at stop angle — no further hinge dynamics needed
-    if (panel.deployed) {
-      const qMountD = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
-      const aLocalD = hingeAxisUnit(spec.axis);
-      const aBodyD = qRotateVec(qMountD, aLocalD);
-      updates.push({
-        thetaNew: panel.angle, omegaRelNew: 0, deployedNew: true,
-        contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
-        aBody: aBodyD, aLocal: aLocalD, qMount: qMountD,
-      });
-      continue;
-    }
-
     // Mounting rotation from spec.rot (transforms local panel frame → body frame)
     const qMount = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
     const aLocal = hingeAxisUnit(spec.axis);        // hinge axis in local frame
@@ -610,29 +616,15 @@ export function stepSimulation(
       contactForceNew = 0;
 
     } else {
-      // ── Physics-driven hinge (stage-aware) ─────────────────────────────────
+      // ── Physics-driven spring-damper hinge (stage-aware) ───────────────────
       const h = params.hinge;
       // Use panel-specific max angle as the target stop angle
       const stopAngle = panelMaxAngle;
-
-      let tau: number;
-      if (h.hingeModel === 'bistable' && h.bistability) {
-        // ── Bistable tape-spring double-well potential ────────────────────────
-        // U(θ) = A·θ²·(θ − θ_max)² − τ_preload·θ
-        // τ(θ) = −dU/dθ = −2A·θ·(θ − θ_max)·(2θ − θ_max) + τ_preload
-        // Ref: Seffen & Pellegrino 1999; Mallikarachchi & Pellegrino 2011
-        const A = h.bistability.bistabilityCoeff;
-        tau = -2 * A * theta * (theta - stopAngle) * (2 * theta - stopAngle) + h.preloadTorque;
-      } else {
-        // ── Linear spring-damper (default) ───────────────────────────────────
-        // Apply thermal stiffness multiplier if thermal model is active
-        const effectiveSpringConstant = thermalState && thermalParams
-          ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
-          : h.springConstant;
-        tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
-      }
-
-      // Viscous damping and Coulomb friction (common to both models)
+      // Apply thermal stiffness multiplier if thermal model is active
+      const effectiveSpringConstant = thermalState && thermalParams
+        ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
+        : h.springConstant;
+      let tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
       tau -= h.dampingCoeff * omegaRel;
       tau -= Math.sign(omegaRel) * h.frictionCoeff;
 

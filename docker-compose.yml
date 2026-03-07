@@ -19,3 +19,5 @@ services:
               count: all
               capabilities: [gpu]
     command: npm run dev
+    stdin_open: true
+    tty: true

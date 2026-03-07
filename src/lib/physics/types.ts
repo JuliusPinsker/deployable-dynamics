@@ -2,11 +2,9 @@
 
 import type { ThermalState, ThermalParams } from './thermalModel';
 import type { FlexParams, FlexState } from './flexModel';
-import type { OrbitalParams } from './orbitalTorques';
 
 export type { ThermalState, ThermalParams } from './thermalModel';
 export type { FlexParams, FlexState } from './flexModel';
-export type { OrbitalParams } from './orbitalTorques';
 
 export interface Vector3 {
   x: number;
@@ -37,14 +35,6 @@ export interface HingeParams {
   // Optional: kinematic deployment duration (seconds). When provided, panels follow a deterministic ease-out
   // kinematic profile (useful for precise animation timing). If omitted, the hinge is physics-driven.
   deployDuration?: number;
-  // Hinge model selection: 'linear' (default) or 'bistable' (tape-spring double-well potential)
-  hingeModel?: 'linear' | 'bistable';
-  // Bistable tape-spring parameters (only used when hingeModel === 'bistable')
-  // Reference: Seffen & Pellegrino 1999 (Proc. R. Soc. A), Mallikarachchi & Pellegrino 2011 (AIAA J.)
-  bistability?: {
-    bistabilityCoeff: number;    // A coefficient (N·m/rad⁴) — shapes double-well potential
-    snapThroughAngle: number;    // θ_snap in radians — angle of peak energy barrier
-  };
 }
 
 export interface PanelState {
@@ -97,8 +87,6 @@ export interface SimulationParams {
   thermal?: ThermalParams;
   // ── Optional flexible panel dynamics parameters ──
   flex?: FlexParams;
-  // ── Optional orbital environment parameters ──
-  orbitalParams?: OrbitalParams;
 }
 
 export type ConfigType =

@@ -59,6 +59,61 @@ const PANEL_CELL_COLOR = '#1e3f8a';
 const BODY_COLOR = '#c0c0c0';
 const CONFIG_COLORS = ['#3b82f6', '#2dd4a8', '#f59e0b', '#a855f7'];
 
+function kelvinToRGB(T: number): string {
+  // Map temperature range 150 K (deep shadow) to 380 K (sunlit) to colour
+  const cold = { r: 30, g: 80, b: 200 };
+  const neutral = { r: 40, g: 160, b: 80 };
+  const hot = { r: 255, g: 80, b: 10 };
+  const t = Math.max(0, Math.min(1, (T - 150) / (380 - 150)));
+  let r: number, g: number, b: number;
+  if (t < 0.5) {
+    const s = t / 0.5;
+    r = Math.round(cold.r + s * (neutral.r - cold.r));
+    g = Math.round(cold.g + s * (neutral.g - cold.g));
+    b = Math.round(cold.b + s * (neutral.b - cold.b));
+  } else {
+    const s = (t - 0.5) / 0.5;
+    r = Math.round(neutral.r + s * (hot.r - neutral.r));
+    g = Math.round(neutral.g + s * (hot.g - neutral.g));
+    b = Math.round(neutral.b + s * (hot.b - neutral.b));
+  }
+  return `rgb(${r},${g},${b})`;
+}
+
+function useThermalColor(panelIndex: number, thermalEnabled: boolean): string {
+  const [color, setColor] = React.useState<string>('#1e3f8a');
+  const frameRef = React.useRef<number>(0);
+  const startRef = React.useRef<number>(performance.now());
+
+  React.useEffect(() => {
+    if (!thermalEnabled) {
+      setColor('#1e3f8a'); // reset to default panel blue
+      return;
+    }
+    const orbitPeriod = 92 * 60 * 1000; // 92-minute LEO orbit in ms
+    // Each panel is offset by its index (simulate different faces)
+    const phaseOffset = (panelIndex / 4) * Math.PI * 2;
+
+    function tick() {
+      const elapsed = performance.now() - startRef.current;
+      // Speed up by 500x so one orbit = ~11 seconds visually
+      const t = ((elapsed * 500) % orbitPeriod) / orbitPeriod;
+      const angle = t * Math.PI * 2 + phaseOffset;
+      // Eclipse fraction: panel is in shadow ~35% of orbit
+      const sunlit = Math.sin(angle) > -0.35 ? Math.sin(angle) : -0.35;
+      // Temperature swings: 170 K in eclipse, 340 K in full sun
+      const T = 255 + 85 * sunlit; // K
+      setColor(kelvinToRGB(T));
+      frameRef.current = requestAnimationFrame(tick);
+    }
+
+    frameRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameRef.current);
+  }, [thermalEnabled, panelIndex]);
+
+  return color;
+}
+
 function SolarPanel({
   position,
   rotation,
@@ -75,6 +130,8 @@ function SolarPanel({
   frameWidth,
   children,
   thermalColor,
+  thermalEnabled,
+  panelIndex,
 }: {
   position: [number, number, number];
   rotation: [number, number, number];
@@ -92,6 +149,8 @@ function SolarPanel({
   children?: React.ReactNode;
   /** When provided, overrides config colour with thermal-driven colour */
   thermalColor?: string;
+  thermalEnabled?: boolean;
+  panelIndex?: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
 
@@ -108,6 +167,9 @@ function SolarPanel({
   const panelColor = stuck 
     ? '#ef4444' 
     : (thermalColor ?? CONFIG_COLORS[configColorIndex] ?? PANEL_CELL_COLOR);
+
+  const thermalColorFromHook = useThermalColor(panelIndex ?? 0, thermalEnabled ?? false);
+  const activePanelColor = (thermalEnabled && !stuck) ? thermalColorFromHook : panelColor;
 
   // Decompose sandwich panel
   const length = size[0];
@@ -186,7 +248,14 @@ function SolarPanel({
           {/* Solar cell layer (top) */}
           <mesh position={[0, solarCenter, 0]} castShadow>
             <boxGeometry args={[length, solarTh, depth]} />
-            <meshStandardMaterial map={solarTexture} metalness={0.2} roughness={0.4} />
+            <meshStandardMaterial
+              map={thermalEnabled ? null : solarTexture}
+              color={activePanelColor}
+              emissive={thermalEnabled ? activePanelColor : '#000000'}
+              emissiveIntensity={thermalEnabled ? 0.4 : 0}
+              metalness={0.2}
+              roughness={0.4}
+            />
           </mesh>
 
           {/* Honeycomb core (middle) */}
@@ -198,7 +267,13 @@ function SolarPanel({
           {/* Aluminum backing (bottom) */}
           <mesh position={[0, backCenter, 0]} castShadow>
             <boxGeometry args={[length, backTh, depth]} />
-            <meshStandardMaterial color="#a5a9ac" metalness={0.9} roughness={0.25} />
+            <meshStandardMaterial
+              color={thermalEnabled ? activePanelColor : '#a5a9ac'}
+              emissive={thermalEnabled ? activePanelColor : '#000000'}
+              emissiveIntensity={thermalEnabled ? 0.2 : 0}
+              metalness={0.9}
+              roughness={0.25}
+            />
           </mesh>
 
           {/* Frame — four perimeter bars (width = frameWidth) */}
@@ -561,6 +636,8 @@ function CubeSatScene({
             configColorIndex={configIndex}
             frameWidth={0.005 * size}
             thermalColor={thermalColor}
+            thermalEnabled={thermalEnabled}
+            panelIndex={i}
           >
             {/* Render child panels hierarchically */}
             {childPanels.map(child => (
@@ -582,6 +659,8 @@ function CubeSatScene({
                 configColorIndex={configIndex}
                 frameWidth={0.005 * size}
                 thermalColor={thermalColor}
+                thermalEnabled={thermalEnabled}
+                panelIndex={child.idx}
               />
             ))}
           </SolarPanel>

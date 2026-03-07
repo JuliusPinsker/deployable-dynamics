@@ -19,7 +19,6 @@ export default function SimulationPage() {
 
   const [config, setConfig] = useState<ConfigType>(initialConfig);
   const [thermalEnabled, setThermalEnabled] = useState(false);
-  const [gravityGradientEnabled, setGravityGradientEnabled] = useState(true);
   const [thermalParams, setThermalParams] = useState<ThermalParams>(DEFAULT_THERMAL_PARAMS);
   const [state, setState] = useState<SpacecraftState>(() => 
     createInitialState(config, thermalEnabled ? thermalParams : undefined)
@@ -30,17 +29,13 @@ export default function SimulationPage() {
   const [showLabels, setShowLabels] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
   const params = React.useMemo<SimulationParams>(() => {
-    const baseParams = {
-      ...DEFAULT_PARAMS,
-      gravityGradientEnabled,
-    };
     if (thermalEnabled) {
       // Switch to physics-driven spring mode so thermal stiffness
       // changes are physically visible in deployment speed.
       // deployDuration: 0 disables kinematic ease-out and activates
       // the spring-damper branch where applyThermalStiffness is called.
       return {
-        ...baseParams,
+        ...DEFAULT_PARAMS,
         hinge: {
           ...DEFAULT_PARAMS.hinge,
           deployDuration: 0,
@@ -50,8 +45,8 @@ export default function SimulationPage() {
         },
       };
     }
-    return baseParams;
-  }, [thermalEnabled, gravityGradientEnabled]);
+    return DEFAULT_PARAMS;
+  }, [thermalEnabled]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -69,60 +64,50 @@ export default function SimulationPage() {
   const thermalEnabledRef = useRef(thermalEnabled);
   thermalEnabledRef.current = thermalEnabled;
 
-  const gravityGradientEnabledRef = useRef(gravityGradientEnabled);
-  gravityGradientEnabledRef.current = gravityGradientEnabled;
-
   const animate = useCallback(() => {
     const st = stateRef.current;
     const currentParams = paramsRef.current;
     
-    // Continue simulation if deploying OR if we want post-deployment physics
-    // (gravity gradient drift, thermal cycling) — limit to 60s total
-    const continuePostDeploy = 
-      (gravityGradientEnabledRef.current || thermalEnabledRef.current) && st.time < 60;
-
-    if (st.deploying || continuePostDeploy) {
-      // Physics loop — runs during deployment and continues after for drift observation
+    if (st.deploying) {
+      // Normal deployment physics loop
       const stepsPerFrame = Math.max(1, Math.round(speedRef.current));
       let newState = st;
       for (let i = 0; i < stepsPerFrame; i++) {
-        // Force deploying=true to keep physics stepping even post-deployment
-        const simState = newState.deploying ? newState : { ...newState, deploying: true };
-        newState = stepSimulation(simState, configRef.current, currentParams);
-        // If panels are all deployed, mark deploying=false but keep time advancing
-        if (!newState.deploying) {
-          newState = { ...newState, deploying: false };
-        }
+        newState = stepSimulation(newState, configRef.current, currentParams);
       }
       setState(newState);
 
-      // Compute GG torque for telemetry — only if toggle is on
-      if (gravityGradientEnabledRef.current) {
-        const MU = 3.986004418e14;
-        const R_EARTH = 6.371e6;
-        const altM = currentParams.orbitAltitudeM ?? 400_000;
-        const R = R_EARTH + altM;
-        const m = currentParams.bodyMass;
-        const w = currentParams.bodyWidth;
-        const h = currentParams.bodyHeight;
-        const d = currentParams.bodyDepth;
-        const Ixx = (1/12) * m * (h*h + d*d);
-        const Iyy = (1/12) * m * (w*w + d*d);
-        const Izz = (1/12) * m * (w*w + h*h);
-        const n = Math.sqrt(MU / (R*R*R));
-        // Instantaneous GG torque magnitude at current nadir angle
-        const nadirAngle = n * newState.time;
-        const ry = -Math.sin(nadirAngle);
-        const rz = -Math.cos(nadirAngle);
-        // Body-frame torque components (nadir in Y-Z plane, rx=0)
-        const tauX = 3 * n * n * (Izz - Iyy) * ry * rz;
-        const tauY = 0; // rx = 0
-        const tauZ = 0; // rx = 0
-        const ggMag = Math.sqrt(tauX*tauX + tauY*tauY + tauZ*tauZ);
-        setGgTorqueMag(ggMag);
-      } else {
-        setGgTorqueMag(0); // Toggle off → show zero
-      }
+      // Compute GG torque for telemetry display
+      const MU = 3.986004418e14;
+      const R_EARTH = 6.371e6;
+      const altM = 400_000;
+      const R = R_EARTH + altM;
+      const Ixx = (1/12) * 4.0 * (0.3405**2 + 0.1**2);
+      const Iyy = (1/12) * 4.0 * (0.1**2 + 0.1**2);
+      const Izz = (1/12) * 4.0 * (0.1**2 + 0.3405**2);
+      const factor = (3 * MU) / (R**3);
+      // Max GG torque at 45° nadir angle: each component max = factor * |ΔI| * 0.5
+      const maxGG = factor * Math.max(
+        Math.abs(Izz - Iyy),
+        Math.abs(Ixx - Izz),
+        Math.abs(Iyy - Ixx),
+      ) * 0.5;
+      setGgTorqueMag(maxGG);
+    } else if (thermalEnabledRef.current && st.thermalState && st.thermalParams) {
+      // Post-deployment: keep advancing thermal state only
+      // so the user can watch the full eclipse/sunlight cycle
+      import('@/lib/physics/thermalModel').then(({ stepThermalState }) => {
+        const newThermal = stepThermalState(
+          st.thermalState!,
+          st.thermalParams!,
+          currentParams.timeStep
+        );
+        setState(prev => ({
+          ...prev,
+          thermalState: newThermal,
+          thermalParams: prev.thermalParams,
+        }));
+      });
     } else {
       return;
     }
@@ -302,11 +287,6 @@ export default function SimulationPage() {
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Coordinate System</Label>
                 <Switch checked={showAxes} onCheckedChange={setShowAxes} />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <Label className="text-xs text-muted-foreground">Gravity Gradient</Label>
-                <Switch checked={gravityGradientEnabled} onCheckedChange={setGravityGradientEnabled} />
               </div>
             </CardContent>
           </Card>
