@@ -22,3 +22,30 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.secret
+
+# Testing & coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Build artifacts
+*.tsbuildinfo
+.next/
+out/
+.nuxt/
+.cache/
+.parcel-cache/
+
+# OS
+Thumbs.db
+
+# Simulation outputs
+simulation_outputs/
+*.bin
