@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType } from '@/lib/physics/types';
 import { runFullSimulation, type SimulationFrame } from '@/lib/physics/engine';
 import {
@@ -15,6 +17,7 @@ import {
   stepThermalState,
   DEFAULT_THERMAL_PARAMS,
 } from '@/lib/physics/thermalModel';
+import { DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
 const chartConfig: ChartConfig = {
@@ -30,6 +33,7 @@ export default function ComparePage() {
   const [stuckPanels, setStuckPanels] = useState<number[]>([]);
   const [anomaly, setAnomaly] = useState('none');
   const [betaAngle, setBetaAngle] = useState(0); // degrees, 0 = equatorial
+  const [flexEnabled, setFlexEnabled] = useState(false);
 
   const stuckConfig = useMemo(() => {
     switch (anomaly) {
@@ -51,13 +55,14 @@ export default function ComparePage() {
         ...DEFAULT_PARAMS.hinge,
         deployDuration: 0, // disables kinematic ramp; enables physics-driven motion
       },
+      ...(flexEnabled ? { flex: DEFAULT_FLEX_PARAMS } : {}),
     };
     
     for (const c of configs) {
       results[c] = runFullSimulation(c, physicsParams, 8, stuckConfig);
     }
     return results;
-  }, [stuckConfig]);
+  }, [stuckConfig, flexEnabled]);
 
   // Merge data for angular velocity chart
   const angVelData = useMemo(() => {
@@ -150,6 +155,28 @@ export default function ComparePage() {
       };
     });
   }, [allSimData]);
+
+  // Tip deflection data (when flex model is active)
+  const tipDeflectionData = useMemo(() => {
+    if (!flexEnabled) return null;
+    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
+    const maxLen = Math.max(...configs.map(c => allSimData[c].length));
+    const data: any[] = [];
+    for (let i = 0; i < maxLen; i += 2) {
+      const point: any = {};
+      for (const c of configs) {
+        const frame = allSimData[c][i];
+        if (frame && frame.tipDeflectionDeg && frame.tipDeflectionDeg.length > 0) {
+          point.time = frame.time;
+          // Use max tip deflection across all panels for this config
+          const maxTip = Math.max(...frame.tipDeflectionDeg.map(Math.abs));
+          point[c] = Number(maxTip.toFixed(4));
+        }
+      }
+      if (point.time !== undefined) data.push(point);
+    }
+    return data.length > 0 ? data : null;
+  }, [allSimData, flexEnabled]);
 
   // Thermal comparison: radiation-balance model with per-config panel area differentiation
   const thermalComparisonData = useMemo(() => {
@@ -250,20 +277,60 @@ export default function ComparePage() {
               Quantitative comparison of deployment dynamics across all 4 configurations
             </p>
           </div>
-          <Select value={anomaly} onValueChange={setAnomaly}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="Anomaly scenario" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Nominal (no failure)</SelectItem>
-              <SelectItem value="one-stuck">One panel stuck</SelectItem>
-              <SelectItem value="two-opposite">Two panels (opposite)</SelectItem>
-              <SelectItem value="two-adjacent">Two panels (adjacent)</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-muted-foreground">Flex Model</Label>
+              <Switch checked={flexEnabled} onCheckedChange={setFlexEnabled} />
+            </div>
+            <Select value={anomaly} onValueChange={setAnomaly}>
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="Anomaly scenario" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Nominal (no failure)</SelectItem>
+                <SelectItem value="one-stuck">One panel stuck</SelectItem>
+                <SelectItem value="two-opposite">Two panels (opposite)</SelectItem>
+                <SelectItem value="two-adjacent">Two panels (adjacent)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Tip Deflection chart (only when flex model active) */}
+          {flexEnabled && tipDeflectionData && (
+            <Card className="col-span-1 lg:col-span-2">
+              <CardHeader>
+                <CardTitle className="text-sm">Panel Tip Deflection (°) vs Time</CardTitle>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Craig-Bampton modal flex model — max tip deflection across all panels per config
+                </p>
+              </CardHeader>
+              <CardContent>
+                <ChartContainer config={chartConfig} className="h-[300px]">
+                  <LineChart data={tipDeflectionData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="time" tick={{ fontSize: 11 }} label={{ value: 'Time (s)', position: 'insideBottom', offset: -5, style: { fontSize: 11 } }} />
+                    <YAxis tick={{ fontSize: 11 }} label={{ value: '°', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Line type="monotone" dataKey="long-edge" stroke={COLORS[0]} strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="double-long-edge" stroke={COLORS[1]} strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="short-edge" stroke={COLORS[2]} strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="short-edge-long-edge" stroke={COLORS[3]} strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ChartContainer>
+                <div className="flex gap-4 mt-2 justify-center">
+                  {CONFIGURATIONS.map((c, i) => (
+                    <div key={c.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <div className="w-3 h-0.5 rounded" style={{ backgroundColor: COLORS[i] }} />
+                      {c.shortName}
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Angular Velocity over time */}
           <Card className="col-span-1 lg:col-span-2">
             <CardHeader>

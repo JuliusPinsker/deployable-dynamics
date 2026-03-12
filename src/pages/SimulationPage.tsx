@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, type SimulationParams } from '@/lib/physics/types';
 import { createInitialState, stepSimulation } from '@/lib/physics/engine';
 import { type ThermalParams, DEFAULT_THERMAL_PARAMS } from '@/lib/physics/thermalModel';
+import { type FlexParams, DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
 import { Play, RotateCcw, Pause } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
@@ -19,10 +20,11 @@ export default function SimulationPage() {
 
   const [config, setConfig] = useState<ConfigType>(initialConfig);
   const [thermalEnabled, setThermalEnabled] = useState(false);
+  const [flexEnabled, setFlexEnabled] = useState(false);
   const [gravityGradientEnabled, setGravityGradientEnabled] = useState(true);
   const [thermalParams, setThermalParams] = useState<ThermalParams>(DEFAULT_THERMAL_PARAMS);
   const [state, setState] = useState<SpacecraftState>(() => 
-    createInitialState(config, thermalEnabled ? thermalParams : undefined)
+    createInitialState(config, thermalEnabled ? thermalParams : undefined, flexEnabled ? DEFAULT_FLEX_PARAMS : undefined)
   );
   const [speed, setSpeed] = useState(1);
   const [ggTorqueMag, setGgTorqueMag] = useState<number | undefined>(undefined);
@@ -42,8 +44,12 @@ export default function SimulationPage() {
           },
         }
       : { ...DEFAULT_PARAMS };
-    return { ...base, gravityGradientEnabled };
-  }, [thermalEnabled, gravityGradientEnabled]);
+    return {
+      ...base,
+      gravityGradientEnabled,
+      ...(flexEnabled ? { flex: DEFAULT_FLEX_PARAMS } : {}),
+    };
+  }, [thermalEnabled, gravityGradientEnabled, flexEnabled]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -127,14 +133,14 @@ export default function SimulationPage() {
 
   const handleReset = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
-    setState(createInitialState(config, thermalEnabled ? thermalParams : undefined));
-  }, [config, thermalEnabled, thermalParams]);
+    setState(createInitialState(config, thermalEnabled ? thermalParams : undefined, flexEnabled ? DEFAULT_FLEX_PARAMS : undefined));
+  }, [config, thermalEnabled, thermalParams, flexEnabled]);
 
   const handleConfigChange = useCallback((c: ConfigType) => {
     cancelAnimationFrame(rafRef.current);
     setConfig(c);
-    setState(createInitialState(c, thermalEnabled ? thermalParams : undefined));
-  }, [thermalEnabled, thermalParams]);
+    setState(createInitialState(c, thermalEnabled ? thermalParams : undefined, flexEnabled ? DEFAULT_FLEX_PARAMS : undefined));
+  }, [thermalEnabled, thermalParams, flexEnabled]);
 
   const handlePanelClick = useCallback((index: number) => {
     setState(s => {
@@ -292,6 +298,18 @@ export default function SimulationPage() {
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Gravity Gradient</Label>
                 <Switch checked={gravityGradientEnabled} onCheckedChange={setGravityGradientEnabled} />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">Flex Model</Label>
+                <Switch
+                  checked={flexEnabled}
+                  onCheckedChange={(v) => {
+                    setFlexEnabled(v);
+                    cancelAnimationFrame(rafRef.current);
+                    setState(createInitialState(config, thermalEnabled ? thermalParams : undefined, v ? DEFAULT_FLEX_PARAMS : undefined));
+                  }}
+                />
               </div>
             </CardContent>
           </Card>
