@@ -73,7 +73,7 @@ Open [http://localhost:8080](http://localhost:8080).
 docker compose up
 ```
 
-The app is served on port `8080` inside the container.
+The app is served on port `8080` inside the container and mapped to `http://localhost:8080` on your host.
 
 ## Tech Stack
 
