@@ -25,7 +25,7 @@ Deployable Dynamics models the rigid-body rotational dynamics of a 3U CubeSat du
 
 ## Physics Engine
 
-The engine (`src/lib/physics/engine.ts`) models each hinge as a torsional spring-damper:
+The engine (`src/lib/physics/engine.ts`) models each hinge as a torsional spring-damper. All torque values are in N·m and angular quantities in radians unless noted otherwise.
 
 - **Spring torque**: `τ = k · (θ_stop − θ)` — preloaded torsion spring driving deployment
 - **Damping**: `τ_d = −c · dθ/dt` — viscous damping, tuned for overdamped (~2 s) deployment
