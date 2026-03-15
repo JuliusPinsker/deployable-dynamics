@@ -12,7 +12,7 @@
 
 ## What It Does
 
-Deployable Dynamics models the rigid-body rotational dynamics of a 3U CubeSat during solar panel deployment. A physics engine integrates hinge spring-damper equations and propagates attitude disturbances to the spacecraft body in real time. A React Three Fiber 3D viewer renders the satellite with sandwich-panel geometry, configurable hinge rods, and live orientation widgets.
+Deployable Dynamics models the rigid-body rotational dynamics of a 3U CubeSat during solar panel deployment. A physics engine integrates hinge spring-damper equations and propagates attitude disturbances to the spacecraft body in real time. A React Three Fiber 3D viewer renders the satellite with sandwich-panel geometry, configurable hinge rods, and live orientation widgets. The simulator is intended for early-phase design trade studies where rapid iteration matters more than high-fidelity multibody solvers.
 
 ## Deployable Configurations
 
