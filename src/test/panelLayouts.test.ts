@@ -158,24 +158,50 @@ describe('getPanelSpecs - long-edge configuration (side-mounted panels)', () => 
     expect(zTopNegY).toBeCloseTo(-zBotNegY, 6);
   });
 
-  it('short-edge-long-edge returns 8 top-mounted panels', () => {
+  it('short-edge-long-edge composes unchanged long-edge chain + short-edge geometry', () => {
     const specs = getPanelSpecs('short-edge-long-edge', DEFAULT_PARAMS);
     expect(specs.length).toBe(8);
 
-    // All hinges at Z = hz (top deck)
-    specs.forEach(s => expect(s.hinge[2]).toBeCloseTo(hz, 6));
+    const longEdgeCoupled = specs.slice(0, 4);
+    const shortEdgeCoupled = specs.slice(4, 8);
 
-    // First 4 are LE with slightly reduced length (90%)
-    const reducedLen = DEFAULT_PARAMS.panelLength * 0.9;
-    const lePanels = specs.slice(0, 4);
-    lePanels.forEach(s => expect(s.size[0]).toBeCloseTo(reducedLen, 6));
+    const longEdgeBase = getPanelSpecs('double-long-edge', DEFAULT_PARAMS);
+    const shortEdgeBase = getPanelSpecs('short-edge', DEFAULT_PARAMS);
 
-    // LE panels should use 'y' axis (on ±X edges)
-    lePanels.forEach(s => expect(s.axis).toBe('y'));
+    expect(longEdgeCoupled.length).toBe(4);
+    expect(shortEdgeCoupled.length).toBe(4);
 
-    // SE panels are last 4
-    const sePanels = specs.slice(4);
-    expect(sePanels.length).toBe(4);
+    // Coupled panels 0..3 must preserve validated long-edge chain geometry and hierarchy.
+    longEdgeCoupled.forEach((s, i) => {
+      const b = longEdgeBase[i];
+      expect(s.size).toEqual(b.size);
+      expect(s.hinge).toEqual(b.hinge);
+      expect(s.pos).toEqual(b.pos);
+      expect(s.rot).toEqual(b.rot);
+      expect(s.axis).toBe(b.axis);
+      expect(s.parentIndex).toBe(b.parentIndex);
+      expect(s.hingeOffset).toEqual(b.hingeOffset);
+      expect(s.stage).toBe(b.stage);
+      expect(s.maxAngle).toBeCloseTo(b.maxAngle ?? Math.PI / 2, 6);
+    });
+
+    // Coupled panels 4..7 must preserve short-edge geometry and stay independent.
+    shortEdgeCoupled.forEach((s, i) => {
+      const b = shortEdgeBase[i];
+      expect(s.size).toEqual(b.size);
+      expect(s.hinge).toEqual(b.hinge);
+      expect(s.pos).toEqual(b.pos);
+      expect(s.rot).toEqual(b.rot);
+      expect(s.axis).toBe(b.axis);
+      expect(s.parentIndex).toBeUndefined();
+      expect(s.hingeOffset).toBeUndefined();
+      expect(s.stage).toBe(3);
+      expect(s.maxAngle).toBeCloseTo(Math.PI / 2, 6);
+    });
+
+    // Stage sequence metadata: 1,1,2,2,3,3,3,3
+    const stages = specs.map(s => s.stage ?? 1);
+    expect(stages).toEqual([1, 1, 2, 2, 3, 3, 3, 3]);
   });
 
   it('returns empty array for unknown config', () => {

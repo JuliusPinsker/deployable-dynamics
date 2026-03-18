@@ -133,4 +133,72 @@ describe('sample simulation (3U)', () => {
     expect(delayedFrame!.panelAngles[1]).toBeCloseTo(leaderFrame!.panelAngles[0], 1);
     expect(delayedFrame!.panelAngles[3]).toBeCloseTo(leaderFrame!.panelAngles[2], 1);
   });
+
+  it('coupled enforces 3-stage deployment: long-edge stage1, long-edge stage2, then short-edge', () => {
+    const delay = 0.8;
+    const params = {
+      ...DEFAULT_PARAMS,
+      hinge: {
+        ...DEFAULT_PARAMS.hinge,
+        deployDuration: 2.0,
+        shortEdgeStartDelays: [0, delay, 0, delay] as [number, number, number, number],
+      },
+    };
+
+    const frames = runFullSimulation('short-edge-long-edge', params, 8);
+    expect(frames.length).toBeGreaterThan(0);
+
+    const stage1Stop = params.hinge.stopAngle;
+    const stage2Stop = Math.PI;
+    const stage3Stop = Math.PI / 2;
+
+    const stage1Done = frames.find(f =>
+      f.panelAngles[0] >= 0.999 * stage1Stop && f.panelAngles[1] >= 0.999 * stage1Stop,
+    );
+    expect(stage1Done).toBeDefined();
+    expect(stage1Done!.time).toBeGreaterThan(1.75);
+    expect(stage1Done!.time).toBeLessThan(2.25);
+
+    // Stage 2 must stay locked during stage 1.
+    for (const f of frames.filter(f => f.time < stage1Done!.time)) {
+      expect(f.panelAngles[2]).toBeCloseTo(0, 5);
+      expect(f.panelAngles[3]).toBeCloseTo(0, 5);
+    }
+
+    const stage2Done = frames.find(f =>
+      f.panelAngles[2] >= 0.999 * stage2Stop && f.panelAngles[3] >= 0.999 * stage2Stop,
+    );
+    expect(stage2Done).toBeDefined();
+    expect(stage2Done!.time).toBeGreaterThan(3.75);
+    expect(stage2Done!.time).toBeLessThan(4.25);
+
+    // Stage 3 must stay locked until stage 2 is complete.
+    for (const f of frames.filter(f => f.time < stage2Done!.time)) {
+      expect(f.panelAngles[4]).toBeCloseTo(0, 5);
+      expect(f.panelAngles[5]).toBeCloseTo(0, 5);
+      expect(f.panelAngles[6]).toBeCloseTo(0, 5);
+      expect(f.panelAngles[7]).toBeCloseTo(0, 5);
+    }
+
+    // Delayed short-edge panels (indices 5 and 7) should remain stowed for an extra delay.
+    const beforeDelayedStart = frames.findLast(f => f.time < 4 + delay - 0.1);
+    expect(beforeDelayedStart).toBeDefined();
+    expect(beforeDelayedStart!.panelAngles[5]).toBeCloseTo(0, 5);
+    expect(beforeDelayedStart!.panelAngles[7]).toBeCloseTo(0, 5);
+
+    const afterDelayedStart = frames.find(f => f.time > 4 + delay + 0.2);
+    expect(afterDelayedStart).toBeDefined();
+    expect(afterDelayedStart!.panelAngles[5]).toBeGreaterThan(0);
+    expect(afterDelayedStart!.panelAngles[7]).toBeGreaterThan(0);
+
+    const last = frames[frames.length - 1];
+    expect(last.panelAngles[0]).toBeCloseTo(stage1Stop, 5);
+    expect(last.panelAngles[1]).toBeCloseTo(stage1Stop, 5);
+    expect(last.panelAngles[2]).toBeCloseTo(stage2Stop, 5);
+    expect(last.panelAngles[3]).toBeCloseTo(stage2Stop, 5);
+    expect(last.panelAngles[4]).toBeCloseTo(stage3Stop, 5);
+    expect(last.panelAngles[5]).toBeCloseTo(stage3Stop, 5);
+    expect(last.panelAngles[6]).toBeCloseTo(stage3Stop, 5);
+    expect(last.panelAngles[7]).toBeCloseTo(stage3Stop, 5);
+  });
 });

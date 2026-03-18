@@ -466,7 +466,7 @@ interface PanelConfig {
   size: [number, number, number];
   parentIndex?: number;
   hingeOffset?: [number, number, number];
-  stage?: 1 | 2;
+  stage?: 1 | 2 | 3;
   maxAngle?: number;
 }
 
