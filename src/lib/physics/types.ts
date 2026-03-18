@@ -35,6 +35,9 @@ export interface HingeParams {
   // Optional: kinematic deployment duration (seconds). When provided, panels follow a deterministic ease-out
   // kinematic profile (useful for precise animation timing). If omitted, the hinge is physics-driven.
   deployDuration?: number;
+  // Optional per-panel start delays (seconds) for short-edge config panels [0..3].
+  // Delays shift activation time only; hinge axis, geometry, and motion profile remain unchanged.
+  shortEdgeStartDelays?: [number, number, number, number];
 }
 
 export interface PanelState {
@@ -162,6 +165,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
     stopStiffness: 10,       // N·m/rad — ω_n ≈ 100 rad/s for I_panel = 0.001 kg·m²
     stopDamping: 0.24,        // N·m·s/rad — ζ ≈ 1.2 (overdamped, settles in ~0.05 s)
     deployDuration: 2.0,
+    shortEdgeStartDelays: [0, 1.0, 0, 1.0],
   },
   timeStep: 1 / 60,
   orbitAltitudeM: 400_000,       // 400 km LEO

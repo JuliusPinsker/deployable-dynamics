@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { Euler, Vector3 } from 'three';
 import { getPanelSpecs } from '@/lib/physics/panelLayouts';
 import { DEFAULT_PARAMS } from '@/lib/physics/types';
 
 describe('getPanelSpecs - long-edge configuration (side-mounted panels)', () => {
   // Coordinate system: X = right, Y = forward, Z = up
-  const hx = DEFAULT_PARAMS.bodyWidth / 2;   // 0.05
   const hy = DEFAULT_PARAMS.bodyDepth / 2;   // 0.05
   const hz = DEFAULT_PARAMS.bodyHeight / 2;  // 0.17025
 
@@ -76,30 +76,86 @@ describe('getPanelSpecs - long-edge configuration (side-mounted panels)', () => 
     });
   });
 
-  it('returns 4 short-edge panels in cross pattern from top deck', () => {
+  it('returns 4 short-edge panels mounted flat on ±Z faces with X-axis hinges', () => {
     const specs = getPanelSpecs('short-edge', DEFAULT_PARAMS);
     expect(specs.length).toBe(4);
 
-    // All hinges at Z = hz (top deck)
-    specs.forEach(s => expect(s.hinge[2]).toBeCloseTo(hz, 6));
+    const topPanels = specs.filter(s => s.hinge[2] > 0);
+    const bottomPanels = specs.filter(s => s.hinge[2] < 0);
+    expect(topPanels.length).toBe(2);
+    expect(bottomPanels.length).toBe(2);
 
-    // Two panels with axis='y' (on ±X edges) and two with axis='x' (on ±Y edges)
-    const yAxisPanels = specs.filter(s => s.axis === 'y');
-    const xAxisPanels = specs.filter(s => s.axis === 'x');
-    expect(yAxisPanels.length).toBe(2);
-    expect(xAxisPanels.length).toBe(2);
-
-    // Check hinge positions for X-axis panels (on ±Y edges)
-    xAxisPanels.forEach(s => {
-      expect(Math.abs(s.hinge[1])).toBeCloseTo(hy, 6); // at ±Y edges
-      expect(s.hinge[0]).toBeCloseTo(0, 6);            // centered on X
+    // All panels use X-axis hinges and are centered on X=0 with hinges at Y=±hy.
+    specs.forEach(s => {
+      expect(s.axis).toBe('x');
+      expect(s.hinge[0]).toBeCloseTo(0, 6);
+      expect(Math.abs(s.hinge[1])).toBeCloseTo(hy, 6);
+      expect(s.size[0]).toBeCloseTo(0.1, 6);
+      expect(s.size[2]).toBeCloseTo(0.1, 6);
     });
 
-    // Check hinge positions for Y-axis panels (on ±X edges)
-    yAxisPanels.forEach(s => {
-      expect(Math.abs(s.hinge[0])).toBeCloseTo(hx, 6); // at ±X edges
-      expect(s.hinge[1]).toBeCloseTo(0, 6);            // centered on Y
+    // Top panels on +Z face, bottom panels on -Z face.
+    topPanels.forEach(s => expect(s.hinge[2]).toBeCloseTo(hz, 6));
+    bottomPanels.forEach(s => expect(s.hinge[2]).toBeCloseTo(-hz, 6));
+
+    // Stowed panel normals must align with ±Z (flat and parallel to ±Z faces).
+    specs.forEach(s => {
+      const normal = new Vector3(0, 1, 0).applyEuler(new Euler(s.rot[0], s.rot[1], s.rot[2], 'XYZ'));
+      expect(Math.abs(normal.z)).toBeGreaterThan(0.999);
+      expect(Math.abs(normal.x)).toBeLessThan(1e-6);
+      expect(Math.abs(normal.y)).toBeLessThan(1e-6);
     });
+
+    // All panels must deploy outward from the body for +theta rotation.
+    const theta = Math.PI / 6;
+    for (const s of specs) {
+      const mount = new Euler(s.rot[0], s.rot[1], s.rot[2], 'XYZ');
+      const hingeStep = new Euler(theta, 0, 0, 'XYZ');
+
+      const pos = new Vector3(s.pos[0], s.pos[1], s.pos[2]);
+      const offset = pos.applyEuler(hingeStep).applyEuler(mount);
+      const zStep = s.hinge[2] + offset.z;
+
+      // For top panels (hinge z > 0), outward means z increases from hinge plane.
+      // For bottom panels (hinge z < 0), outward means z decreases from hinge plane.
+      const outwardSign = Math.sign(s.hinge[2]);
+      expect(outwardSign * (zStep - s.hinge[2])).toBeGreaterThan(0);
+
+      // No inward motion at the start of deployment.
+      const smallTheta = Math.PI / 90;
+      const smallStep = new Vector3(s.pos[0], s.pos[1], s.pos[2])
+        .applyEuler(new Euler(smallTheta, 0, 0, 'XYZ'))
+        .applyEuler(mount);
+      const zSmall = s.hinge[2] + smallStep.z;
+      expect(outwardSign * (zSmall - s.hinge[2])).toBeGreaterThan(0);
+    }
+
+    // Opposite top/bottom panels should mirror deployment displacement.
+    const topPosY = specs.find(s => s.id === 'SE_Top_PosY');
+    const topNegY = specs.find(s => s.id === 'SE_Top_NegY');
+    const botPosY = specs.find(s => s.id === 'SE_Bot_PosY');
+    const botNegY = specs.find(s => s.id === 'SE_Bot_NegY');
+
+    expect(topPosY).toBeDefined();
+    expect(topNegY).toBeDefined();
+    expect(botPosY).toBeDefined();
+    expect(botNegY).toBeDefined();
+
+    const zDeltaAt = (s: (typeof specs)[number], thetaRad: number) => {
+      const mount = new Euler(s.rot[0], s.rot[1], s.rot[2], 'XYZ');
+      const offset = new Vector3(s.pos[0], s.pos[1], s.pos[2])
+        .applyEuler(new Euler(thetaRad, 0, 0, 'XYZ'))
+        .applyEuler(mount);
+      return offset.z;
+    };
+
+    const zTopPosY = zDeltaAt(topPosY!, theta);
+    const zTopNegY = zDeltaAt(topNegY!, theta);
+    const zBotPosY = zDeltaAt(botPosY!, theta);
+    const zBotNegY = zDeltaAt(botNegY!, theta);
+
+    expect(zTopPosY).toBeCloseTo(-zBotPosY, 6);
+    expect(zTopNegY).toBeCloseTo(-zBotNegY, 6);
   });
 
   it('short-edge-long-edge returns 8 top-mounted panels', () => {

@@ -584,6 +584,10 @@ export function stepSimulation(
     // ── Stage-aware deployment parameters ────────────────────────────────────
     const panelStage = spec.stage ?? 1;
     const panelMaxAngle = spec.maxAngle ?? params.hinge.stopAngle;
+    const panelStartDelay = config === 'short-edge'
+      ? (params.hinge.shortEdgeStartDelays?.[i] ?? 0)
+      : 0;
+    const panelStartTime = (panelStage - 1) * deployDuration + panelStartDelay;
 
     // Stage 2 panels must wait until ALL stage 1 panels are fully deployed
     const stage1Complete = panelStage <= 1 || state.panels.every((p, idx) => {
@@ -603,13 +607,21 @@ export function stepSimulation(
       hingeTorque = 0;
       thetaDDot = 0;
 
+    } else if ((state.time + dt) < panelStartTime) {
+      // ── Delayed activation window — hold panel stowed until its start time ──
+      thetaNew = theta;
+      omegaRelNew = 0;
+      deployedNew = false;
+      contactForceNew = 0;
+      hingeTorque = 0;
+      thetaDDot = 0;
+
     } else if (deployDuration > 0) {
       // ── Kinematic ease-out deployment (stage-aware) ────────────────────────
-      // Stage 1 panels deploy during [0, deployDuration]
-      // Stage 2 panels deploy during [deployDuration, 2*deployDuration]
+      // Stage 1 panels deploy during [startDelay, startDelay + deployDuration]
+      // Stage 2 panels deploy during [deployDuration + startDelay, 2*deployDuration + startDelay]
       const tNext = state.time + dt;
-      const stageStartTime = (panelStage - 1) * deployDuration;
-      const stageElapsed = tNext - stageStartTime;
+      const stageElapsed = tNext - panelStartTime;
       const progress = Math.min(Math.max(stageElapsed / deployDuration, 0), 1);
       const easeOut = 1 - Math.pow(1 - progress, 3);
       const targetAngle = panelMaxAngle * easeOut;
