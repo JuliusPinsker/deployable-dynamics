@@ -8,13 +8,14 @@ import {
   DEFAULT_THERMAL_PARAMS,
   THERMAL_TIME_SCALE,
 } from '../lib/physics/thermalModel';
+import { GM_EARTH, R_EARTH } from '../lib/physics/orbitalTorques';
 import type { ThermalParams, ThermalState } from '../lib/physics/thermalModel';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Physical constants for validation
 // ─────────────────────────────────────────────────────────────────────────────
-const R_E = 6371;                 // km
-const MU = 398600.4418;           // km³/s²
+const R_E = R_EARTH / 1000;       // km
+const MU = GM_EARTH / 1e9;        // km³/s²
 
 describe('computeOrbitPeriodS', () => {
   it('returns ~92.5 minutes for ISS-altitude (400 km)', () => {

@@ -21,11 +21,9 @@ import {
   createInitialState,
   stepSimulation,
 } from '../lib/physics/engine';
+import { GM_EARTH, R_EARTH } from '../lib/physics/orbitalTorques';
 import { DEFAULT_PARAMS, type SimulationParams } from '../lib/physics/types';
 
-// Physical constants for verification
-const MU_EARTH = 3.986004418e14; // m³/s²
-const R_EARTH = 6.371e6; // m
 const DEFAULT_ALTITUDE = 400_000; // m (400 km LEO)
 
 describe('gravity gradient torque', () => {
@@ -34,7 +32,7 @@ describe('gravity gradient torque', () => {
       // For a spacecraft at 400 km altitude:
       // R = R_earth + h = 6.371e6 + 400e3 = 6.771e6 m
       const R = R_EARTH + DEFAULT_ALTITUDE;
-      const expectedCoeff = (3 * MU_EARTH) / (R * R * R);
+      const expectedCoeff = (3 * GM_EARTH) / (R * R * R);
 
       // Coefficient should be approximately 3.84e-6 rad/s² per kg·m² difference
       expect(expectedCoeff).toBeGreaterThan(3e-6);
@@ -44,7 +42,7 @@ describe('gravity gradient torque', () => {
     it('orbital period at 400 km is approximately 92.5 minutes', () => {
       // For LEO at 400 km: T ≈ 92.5 min ≈ 5550 s
       const R = R_EARTH + DEFAULT_ALTITUDE;
-      const T = 2 * Math.PI * Math.sqrt((R * R * R) / MU_EARTH);
+      const T = 2 * Math.PI * Math.sqrt((R * R * R) / GM_EARTH);
 
       expect(T).toBeGreaterThan(5500);
       expect(T).toBeLessThan(5600);
@@ -52,7 +50,7 @@ describe('gravity gradient torque', () => {
 
     it('orbital angular rate n = 2π/T is correct', () => {
       const R = R_EARTH + DEFAULT_ALTITUDE;
-      const T = 2 * Math.PI * Math.sqrt((R * R * R) / MU_EARTH);
+      const T = 2 * Math.PI * Math.sqrt((R * R * R) / GM_EARTH);
       const n = (2 * Math.PI) / T;
 
       // n ≈ 0.00113 rad/s for 400 km orbit

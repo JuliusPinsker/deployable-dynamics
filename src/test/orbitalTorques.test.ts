@@ -6,6 +6,8 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 import { describe, it, expect } from 'vitest';
+import { draconian } from 'satellite.js';
+import { physicalConstants } from 'mathjs';
 import {
   meanMotion,
   orbitalPeriod,
@@ -30,6 +32,29 @@ function v3Mag(v: Vector3): number {
 function qIdentity(): Quaternion {
   return { w: 1, x: 0, y: 0, z: 0 };
 }
+
+function toNumericConstant(value: unknown, name: string): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (value && typeof value === 'object') {
+    const maybeValue = (value as { value?: unknown }).value;
+    if (typeof maybeValue === 'number' && Number.isFinite(maybeValue)) {
+      return maybeValue;
+    }
+    const maybeToNumber = (value as { toNumber?: (() => number) | undefined }).toNumber;
+    if (typeof maybeToNumber === 'function') {
+      const numeric = maybeToNumber.call(value);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+  }
+  throw new Error(`Unable to resolve numeric value for ${name}`);
+}
+
+const satConstants = draconian as unknown as { GM: number; Re: number };
+const mathConstants = physicalConstants as unknown as { c: unknown; solarConstant: unknown };
 
 // Quaternion for rotation about Z axis by angle θ
 function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
@@ -396,17 +421,18 @@ describe('srpTorque', () => {
 
 describe('physical constants', () => {
   it('GM_EARTH matches standard value', () => {
-    // IERS/WGS-84 value: 3.986004418e14 m³/s²
-    expect(GM_EARTH).toBeCloseTo(3.986004418e14, 6);
+    expect(GM_EARTH).toBeCloseTo(toNumericConstant(satConstants.GM, 'draconian.GM'), 6);
   });
 
-  it('R_EARTH matches WGS-84 mean radius', () => {
-    // WGS-84 mean radius: 6.371e6 m
-    expect(R_EARTH).toBeCloseTo(6.371e6, 0);
+  it('R_EARTH matches satellite.js WGS-84 equatorial radius', () => {
+    const expectedEarthRadiusM = toNumericConstant(satConstants.Re, 'draconian.Re') * 1000;
+    expect(expectedEarthRadiusM).toBeCloseTo(6.3781363e6, 1);
+    expect(R_EARTH).toBeCloseTo(expectedEarthRadiusM, 1);
   });
 
   it('P_SOLAR matches solar constant at 1 AU', () => {
-    // P = L_sun / (4π r² c) ≈ 4.56e-6 N/m²
-    expect(P_SOLAR).toBeCloseTo(4.56e-6, 8);
+    const c = toNumericConstant(mathConstants.c, 'physicalConstants.c');
+    const solar = toNumericConstant(mathConstants.solarConstant, 'physicalConstants.solarConstant');
+    expect(P_SOLAR).toBeCloseTo(solar / c, 8);
   });
 });

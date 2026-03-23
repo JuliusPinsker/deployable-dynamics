@@ -21,22 +21,54 @@
 import type { Vector3, Quaternion, PanelState } from './types';
 import type { PanelSpec } from './panelLayouts';
 import { glMatrix, vec3 } from 'gl-matrix';
+import { draconian } from 'satellite.js';
+import { physicalConstants } from 'mathjs';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Physical Constants (WGS-84 / SI)
 // ─────────────────────────────────────────────────────────────────────────────
 
+function toNumericConstant(value: unknown, name: string): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (value && typeof value === 'object') {
+    const maybeValue = (value as { value?: unknown }).value;
+    if (typeof maybeValue === 'number' && Number.isFinite(maybeValue)) {
+      return maybeValue;
+    }
+
+    const maybeToNumber = (value as { toNumber?: (() => number) | undefined }).toNumber;
+    if (typeof maybeToNumber === 'function') {
+      const numeric = maybeToNumber.call(value);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+  }
+
+  throw new Error(`Unable to resolve numeric value for ${name}`);
+}
+
+const satConstants = draconian as unknown as { GM: number; Re: number };
+const mathConstants = physicalConstants as unknown as {
+  c: unknown;
+  solarConstant: unknown;
+};
+
 /** Earth gravitational parameter μ = GM (m³/s²) */
-export const GM_EARTH = 3.986004418e14;
+export const GM_EARTH = toNumericConstant(satConstants.GM, 'draconian.GM');
 
 /** Earth mean radius (m) — WGS-84 */
-export const R_EARTH = 6.371e6;
-
-/** Solar radiation pressure at 1 AU (N/m²) */
-export const P_SOLAR = 4.56e-6;
+export const R_EARTH = toNumericConstant(satConstants.Re, 'draconian.Re') * 1000;
 
 /** Speed of light (m/s) */
-export const C_LIGHT = 299792458;
+export const C_LIGHT = toNumericConstant(mathConstants.c, 'physicalConstants.c');
+
+/** Solar radiation pressure at 1 AU (N/m²) */
+export const P_SOLAR =
+  toNumericConstant(mathConstants.solarConstant, 'physicalConstants.solarConstant') / C_LIGHT;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Orbital Parameters Interface

@@ -11,6 +11,7 @@ import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, 
 import { createInitialState, stepSimulation } from '@/lib/physics/engine';
 import { type ThermalParams, DEFAULT_THERMAL_PARAMS } from '@/lib/physics/thermalModel';
 import { type FlexParams, DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
+import { GM_EARTH, R_EARTH } from '@/lib/physics/orbitalTorques';
 import { Play, RotateCcw, Pause } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
@@ -82,14 +83,12 @@ export default function SimulationPage() {
 
       // Compute GG torque for telemetry display (only when toggle is on)
       if (currentParams.gravityGradientEnabled) {
-        const MU = 3.986004418e14;
-        const R_EARTH = 6.371e6;
         const altM = currentParams.orbitAltitudeM ?? 400_000;
         const R = R_EARTH + altM;
         const Ixx = (1/12) * currentParams.bodyMass * (currentParams.bodyHeight**2 + currentParams.bodyDepth**2);
         const Iyy = (1/12) * currentParams.bodyMass * (currentParams.bodyWidth**2 + currentParams.bodyDepth**2);
         const Izz = (1/12) * currentParams.bodyMass * (currentParams.bodyWidth**2 + currentParams.bodyHeight**2);
-        const factor = (3 * MU) / (R**3);
+        const factor = (3 * GM_EARTH) / (R**3);
         const maxGG = factor * Math.max(
           Math.abs(Izz - Iyy),
           Math.abs(Ixx - Izz),

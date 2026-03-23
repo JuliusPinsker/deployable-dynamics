@@ -32,6 +32,7 @@ import {
   stepFlexState,
   DEFAULT_FLEX_PARAMS,
 } from './flexModel';
+import { GM_EARTH, R_EARTH } from './orbitalTorques';
 import { glMatrix, vec3 } from 'gl-matrix';
 import {
   Quaternion as ThreeQuaternion,
@@ -233,13 +234,9 @@ function computeGravityGradientTorque(
   t: number,
   altitudeM: number,
 ): Vector3 {
-  // Physical constants (SI)
-  const MU = 3.986004418e14;    // m³/s²  Earth gravitational parameter
-  const R_EARTH = 6.371e6;      // m       Earth mean radius
-
   // Orbital mechanics
   const R = R_EARTH + altitudeM;           // orbit radius (m)
-  const T_orbit = 2 * Math.PI * Math.sqrt((R * R * R) / MU); // period (s)
+  const T_orbit = 2 * Math.PI * Math.sqrt((R * R * R) / GM_EARTH); // period (s)
   const n = (2 * Math.PI) / T_orbit;       // mean motion (rad/s)
 
   // Nadir unit vector in world frame: points from spacecraft toward Earth centre.
@@ -258,7 +255,7 @@ function computeGravityGradientTorque(
   const rz = nadirBody.z;
 
   // Gravity gradient factor: 3μ/R³
-  const factor = (3 * MU) / (R * R * R);
+  const factor = (3 * GM_EARTH) / (R * R * R);
 
   // Body-frame torque components (Hughes 1986, Eq. 3.3.10)
   const tauBodyX = factor * (Ib.z - Ib.y) * ry * rz;

@@ -1,4 +1,6 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+import { GM_EARTH, R_EARTH } from './orbitalTorques';
 //  Temperature-Dependent Torsional Spring Stiffness Model for LEO CubeSat
 //
 //  Models the thermal environment of a Low Earth Orbit satellite and its
@@ -23,10 +25,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Mean Earth radius (km). */
-const R_E_KM = 6371;
+const R_E_KM = R_EARTH / 1000;
 
 /** Standard gravitational parameter for Earth (km³/s²). */
-const MU_KM3_S2 = 398600.4418;
+const MU_KM3_S2 = GM_EARTH / 1e9;
 
 /**
  * Temperature coefficient of elastic modulus for spring steel (K⁻¹).
