@@ -20,6 +20,7 @@
 
 import type { Vector3, Quaternion, PanelState } from './types';
 import type { PanelSpec } from './panelLayouts';
+import { glMatrix, vec3 } from 'gl-matrix';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Physical Constants (WGS-84 / SI)
@@ -80,30 +81,53 @@ export const DEFAULT_ORBITAL_PARAMS: OrbitalParams = {
 //  Helper Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
+glMatrix.setMatrixArrayType(Array);
+
+const arrProto = Array.prototype as number[] & { x?: number; y?: number; z?: number };
+if (!Object.getOwnPropertyDescriptor(arrProto, 'x')) {
+  Object.defineProperties(arrProto, {
+    x: { get() { return this[0]; }, set(v: number) { this[0] = v; } },
+    y: { get() { return this[1]; }, set(v: number) { this[1] = v; } },
+    z: { get() { return this[2]; }, set(v: number) { this[2] = v; } },
+  });
+}
+
+function v3(x: number, y: number, z: number): Vector3 {
+  return vec3.fromValues(x, y, z) as unknown as Vector3;
+}
+
+function toVec3(v: Vector3): vec3 {
+  return vec3.fromValues(v.x, v.y, v.z);
+}
+
 function v3Dot(a: Vector3, b: Vector3): number {
-  return a.x * b.x + a.y * b.y + a.z * b.z;
+  return vec3.dot(toVec3(a), toVec3(b));
 }
 
 function v3Cross(a: Vector3, b: Vector3): Vector3 {
-  return {
-    x: a.y * b.z - a.z * b.y,
-    y: a.z * b.x - a.x * b.z,
-    z: a.x * b.y - a.y * b.x,
-  };
+  const out = vec3.create();
+  vec3.cross(out, toVec3(a), toVec3(b));
+  return out as unknown as Vector3;
 }
 
 function v3Scale(v: Vector3, s: number): Vector3 {
-  return { x: v.x * s, y: v.y * s, z: v.z * s };
+  const out = vec3.create();
+  vec3.scale(out, toVec3(v), s);
+  return out as unknown as Vector3;
 }
 
 function v3Add(a: Vector3, b: Vector3): Vector3 {
-  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+  const out = vec3.create();
+  vec3.add(out, toVec3(a), toVec3(b));
+  return out as unknown as Vector3;
 }
 
 function v3Normalize(v: Vector3): Vector3 {
-  const mag = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-  if (mag < 1e-12) return { x: 0, y: 0, z: 1 };
-  return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
+  const src = toVec3(v);
+  if (vec3.length(src) < 1e-12) return v3(0, 0, 1);
+  const out = vec3.create();
+  vec3.normalize(out, src);
+  return out as unknown as Vector3;
 }
 
 function v3Mag(v: Vector3): number {
@@ -112,7 +136,7 @@ function v3Mag(v: Vector3): number {
 
 /** Rotate vector v by quaternion q: v' = q ⊗ v ⊗ q* */
 function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
-  const qv = { x: q.x, y: q.y, z: q.z };
+  const qv = v3(q.x, q.y, q.z);
   const t = v3Scale(v3Cross(qv, v), 2);
   return v3Add(v, v3Add(v3Scale(t, q.w), v3Cross(qv, t)));
 }
@@ -197,7 +221,7 @@ export function gravityGradientTorque(
   const tauBodyX = factor * (Itotal_diag.z - Itotal_diag.y) * ry * rz;
   const tauBodyY = factor * (Itotal_diag.x - Itotal_diag.z) * rz * rx;
   const tauBodyZ = factor * (Itotal_diag.y - Itotal_diag.x) * rx * ry;
-  const tauBody: Vector3 = { x: tauBodyX, y: tauBodyY, z: tauBodyZ };
+  const tauBody: Vector3 = v3(tauBodyX, tauBodyY, tauBodyZ);
 
   // Rotate torque to world frame
   return qRotateVec(qBody, tauBody);
@@ -265,7 +289,7 @@ export function srpTorque(
   sunWorld: Vector3,
   reflectivity: number = 0.2,
 ): Vector3 {
-  let totalTorque: Vector3 = { x: 0, y: 0, z: 0 };
+  let totalTorque: Vector3 = v3(0, 0, 0);
 
   for (let i = 0; i < panelSpecs.length; i++) {
     const spec = panelSpecs[i];
@@ -288,11 +312,7 @@ export function srpTorque(
 
     // Panel center of pressure in body frame (at panel centroid)
     // Approximate: r_cp ≈ hinge position + (L/2) × panel outward direction
-    const hingePos: Vector3 = {
-      x: spec.pos[0],
-      y: spec.pos[1],
-      z: spec.pos[2],
-    };
+    const hingePos: Vector3 = v3(spec.pos[0], spec.pos[1], spec.pos[2]);
 
     // Panel outward direction rotates with deployment angle
     // Start with mount rotation, then apply hinge rotation
@@ -305,14 +325,14 @@ export function srpTorque(
     let panelNormalBody: Vector3;
     switch (spec.axis) {
       case 'x':
-        panelNormalBody = { x: cosA, y: sinA, z: 0 };
+        panelNormalBody = v3(cosA, sinA, 0);
         break;
       case 'y':
-        panelNormalBody = { x: sinA, y: cosA, z: 0 };
+        panelNormalBody = v3(sinA, cosA, 0);
         break;
       case 'z':
       default:
-        panelNormalBody = { x: sinA, y: 0, z: cosA };
+        panelNormalBody = v3(sinA, 0, cosA);
         break;
     }
 
@@ -332,11 +352,11 @@ export function srpTorque(
     const forceWorld = v3Scale(panelNormalWorld, -forceMag);
 
     // Panel center position in body frame
-    const panelCenterBody: Vector3 = {
-      x: hingePos.x + (panelLength / 2) * panelNormalBody.x,
-      y: hingePos.y + (panelLength / 2) * panelNormalBody.y,
-      z: hingePos.z + (panelLength / 2) * panelNormalBody.z,
-    };
+    const panelCenterBody: Vector3 = v3(
+      hingePos.x + (panelLength / 2) * panelNormalBody.x,
+      hingePos.y + (panelLength / 2) * panelNormalBody.y,
+      hingePos.z + (panelLength / 2) * panelNormalBody.z,
+    );
 
     // Transform to world frame
     const panelCenterWorld = qRotateVec(qBody, panelCenterBody);
@@ -380,11 +400,7 @@ export function updateNadirVector(
   // Orbit normal vector (perpendicular to orbital plane)
   // For inclined orbit: orbit normal in inertial frame
   // Simplified: assume orbit normal is [sin(i), 0, cos(i)] in world frame
-  const orbitNormal: Vector3 = {
-    x: Math.sin(inclinationRad),
-    y: 0,
-    z: Math.cos(inclinationRad),
-  };
+  const orbitNormal: Vector3 = v3(Math.sin(inclinationRad), 0, Math.cos(inclinationRad));
 
   // Rodrigues rotation formula: v' = v·cos(θ) + (k×v)·sin(θ) + k·(k·v)·(1-cos(θ))
   const cosT = Math.cos(dTheta);
@@ -392,11 +408,11 @@ export function updateNadirVector(
   const kCrossV = v3Cross(orbitNormal, nadirWorld);
   const kDotV = v3Dot(orbitNormal, nadirWorld);
 
-  const updated: Vector3 = {
-    x: nadirWorld.x * cosT + kCrossV.x * sinT + orbitNormal.x * kDotV * (1 - cosT),
-    y: nadirWorld.y * cosT + kCrossV.y * sinT + orbitNormal.y * kDotV * (1 - cosT),
-    z: nadirWorld.z * cosT + kCrossV.z * sinT + orbitNormal.z * kDotV * (1 - cosT),
-  };
+  const updated: Vector3 = v3(
+    nadirWorld.x * cosT + kCrossV.x * sinT + orbitNormal.x * kDotV * (1 - cosT),
+    nadirWorld.y * cosT + kCrossV.y * sinT + orbitNormal.y * kDotV * (1 - cosT),
+    nadirWorld.z * cosT + kCrossV.z * sinT + orbitNormal.z * kDotV * (1 - cosT),
+  );
 
   // Re-normalize for numerical stability
   return v3Normalize(updated);
@@ -413,11 +429,7 @@ export function initNadirWorld(
   nadirBodyVec: [number, number, number],
   qBody: Quaternion,
 ): Vector3 {
-  const nadirBody: Vector3 = {
-    x: nadirBodyVec[0],
-    y: nadirBodyVec[1],
-    z: nadirBodyVec[2],
-  };
+  const nadirBody: Vector3 = v3(nadirBodyVec[0], nadirBodyVec[1], nadirBodyVec[2]);
   return v3Normalize(qRotateVec(qBody, nadirBody));
 }
 
@@ -432,10 +444,6 @@ export function initSunWorld(
   sunBodyVec: [number, number, number],
   qBody: Quaternion,
 ): Vector3 {
-  const sunBody: Vector3 = {
-    x: sunBodyVec[0],
-    y: sunBodyVec[1],
-    z: sunBodyVec[2],
-  };
+  const sunBody: Vector3 = v3(sunBodyVec[0], sunBodyVec[1], sunBodyVec[2]);
   return v3Normalize(qRotateVec(qBody, sunBody));
 }
