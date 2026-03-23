@@ -33,6 +33,11 @@ import {
   DEFAULT_FLEX_PARAMS,
 } from './flexModel';
 import { glMatrix, vec3 } from 'gl-matrix';
+import {
+  Quaternion as ThreeQuaternion,
+  Euler,
+  Vector3 as ThreeVector3,
+} from 'three';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Vector3 helpers
@@ -95,50 +100,45 @@ function v3Cross(a: Vector3, b: Vector3): Vector3 {
 
 function qIdentity(): Quaternion { return { w: 1, x: 0, y: 0, z: 0 }; }
 
+function toThreeQuat(q: Quaternion): ThreeQuaternion {
+  return new ThreeQuaternion(q.x, q.y, q.z, q.w);
+}
+
+function fromThreeQuat(q: ThreeQuaternion): Quaternion {
+  return { w: q.w, x: q.x, y: q.y, z: q.z };
+}
+
 function qNormalize(q: Quaternion): Quaternion {
-  const len = Math.sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
-  if (len < 1e-12) return qIdentity();
-  const inv = 1 / len;
-  return { w: q.w * inv, x: q.x * inv, y: q.y * inv, z: q.z * inv };
+  return fromThreeQuat(toThreeQuat(q).normalize());
 }
 
 function qMultiply(a: Quaternion, b: Quaternion): Quaternion {
-  return {
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-  };
+  const q = toThreeQuat(a);
+  q.multiply(toThreeQuat(b));
+  return fromThreeQuat(q);
 }
 
 function qConjugate(q: Quaternion): Quaternion {
-  return { w: q.w, x: -q.x, y: -q.y, z: -q.z };
+  return fromThreeQuat(toThreeQuat(q).conjugate());
 }
 
 function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
-  const half = angle * 0.5;
-  const s = Math.sin(half);
-  return { w: Math.cos(half), x: axis.x * s, y: axis.y * s, z: axis.z * s };
+  const axisVec = new ThreeVector3(axis.x, axis.y, axis.z);
+  if (axisVec.lengthSq() < 1e-24) return qIdentity();
+  const q = new ThreeQuaternion().setFromAxisAngle(axisVec.normalize(), angle);
+  return fromThreeQuat(q);
 }
 
 /** Reconstruct quaternion from XYZ intrinsic Euler angles (matches THREE.js default). */
 function qFromEuler(e: Vector3): Quaternion {
-  const c1 = Math.cos(e.x * 0.5), s1 = Math.sin(e.x * 0.5);
-  const c2 = Math.cos(e.y * 0.5), s2 = Math.sin(e.y * 0.5);
-  const c3 = Math.cos(e.z * 0.5), s3 = Math.sin(e.z * 0.5);
-  return {
-    w: c1 * c2 * c3 - s1 * s2 * s3,
-    x: s1 * c2 * c3 + c1 * s2 * s3,
-    y: c1 * s2 * c3 - s1 * c2 * s3,
-    z: c1 * c2 * s3 + s1 * s2 * c3,
-  };
+  const q = new ThreeQuaternion().setFromEuler(new Euler(e.x, e.y, e.z, 'XYZ'));
+  return fromThreeQuat(q);
 }
 
-/** Rotate vector v by quaternion q:  v' = q ⊗ v ⊗ q*  (optimised). */
+/** Rotate vector v by quaternion q. */
 function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
-  const qv = v3(q.x, q.y, q.z);
-  const t = v3Scale(v3Cross(qv, v), 2);
-  return v3Add(v, v3Add(v3Scale(t, q.w), v3Cross(qv, t)));
+  const out = new ThreeVector3(v.x, v.y, v.z).applyQuaternion(toThreeQuat(q));
+  return v3(out.x, out.y, out.z);
 }
 
 /**
@@ -146,31 +146,8 @@ function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
  * Uses the exact rotation matrix decomposition from THREE.js Euler.setFromQuaternion.
  */
 function qToEuler(q: Quaternion): Vector3 {
-  const { w, x, y, z } = q;
-  const xx = x * x, yy = y * y, zz = z * z;
-
-  // Rotation matrix elements for XYZ decomposition
-  const m13 = 2 * (x * z + w * y);
-  const m23 = 2 * (y * z - w * x);
-  const m33 = 1 - 2 * (xx + yy);
-  const m12 = 2 * (x * y - w * z);
-  const m11 = 1 - 2 * (yy + zz);
-
-  const ey = Math.asin(Math.max(-1, Math.min(1, m13)));
-  let ex: number, ez: number;
-
-  if (Math.abs(m13) < 0.9999999) {
-    ex = Math.atan2(-m23, m33);
-    ez = Math.atan2(-m12, m11);
-  } else {
-    // Gimbal lock
-    const m32 = 2 * (y * z + w * x);
-    const m22 = 1 - 2 * (xx + zz);
-    ex = Math.atan2(m32, m22);
-    ez = 0;
-  }
-
-  return v3(ex, ey, ez);
+  const euler = new Euler().setFromQuaternion(toThreeQuat(q), 'XYZ');
+  return v3(euler.x, euler.y, euler.z);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
