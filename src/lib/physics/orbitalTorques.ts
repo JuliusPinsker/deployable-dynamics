@@ -21,8 +21,8 @@
 import type { Vector3, Quaternion, PanelState } from './types';
 import type { PanelSpec } from './panelLayouts';
 import { glMatrix, vec3 } from 'gl-matrix';
-import { draconian } from 'satellite.js';
-import { physicalConstants } from 'mathjs';
+import { constants } from 'satellite.js';
+import * as math from 'mathjs';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Physical Constants (WGS-84 / SI)
@@ -51,24 +51,22 @@ function toNumericConstant(value: unknown, name: string): number {
   throw new Error(`Unable to resolve numeric value for ${name}`);
 }
 
-const satConstants = draconian as unknown as { GM: number; Re: number };
-const mathConstants = physicalConstants as unknown as {
-  c: unknown;
-  solarConstant: unknown;
-};
+const satConstants = constants as unknown as { mu: number; earthRadius: number };
 
 /** Earth gravitational parameter μ = GM (m³/s²) */
-export const GM_EARTH = toNumericConstant(satConstants.GM, 'draconian.GM');
+export const GM_EARTH = toNumericConstant(satConstants.mu, 'constants.mu') * 1e9;
 
 /** Earth mean radius (m) — WGS-84 */
-export const R_EARTH = toNumericConstant(satConstants.Re, 'draconian.Re') * 1000;
+export const R_EARTH = toNumericConstant(satConstants.earthRadius, 'constants.earthRadius') * 1000;
 
 /** Speed of light (m/s) */
-export const C_LIGHT = toNumericConstant(mathConstants.c, 'physicalConstants.c');
+export const C_LIGHT = toNumericConstant((math as { speedOfLight?: unknown }).speedOfLight, 'mathjs.speedOfLight');
+
+/** Solar irradiance at 1 AU (W/m²), nominal value per ISO 21348 */
+export const SOLAR_CONSTANT_1AU = 1361;
 
 /** Solar radiation pressure at 1 AU (N/m²) */
-export const P_SOLAR =
-  toNumericConstant(mathConstants.solarConstant, 'physicalConstants.solarConstant') / C_LIGHT;
+export const P_SOLAR = SOLAR_CONSTANT_1AU / C_LIGHT;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Orbital Parameters Interface

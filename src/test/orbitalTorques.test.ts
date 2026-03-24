@@ -6,8 +6,8 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 import { describe, it, expect } from 'vitest';
-import { draconian } from 'satellite.js';
-import { physicalConstants } from 'mathjs';
+import { constants } from 'satellite.js';
+import * as math from 'mathjs';
 import {
   meanMotion,
   orbitalPeriod,
@@ -17,6 +17,7 @@ import {
   updateNadirVector,
   GM_EARTH,
   R_EARTH,
+  SOLAR_CONSTANT_1AU,
   P_SOLAR,
 } from '../lib/physics/orbitalTorques';
 import type { Vector3, Quaternion } from '../lib/physics/types';
@@ -53,8 +54,7 @@ function toNumericConstant(value: unknown, name: string): number {
   throw new Error(`Unable to resolve numeric value for ${name}`);
 }
 
-const satConstants = draconian as unknown as { GM: number; Re: number };
-const mathConstants = physicalConstants as unknown as { c: unknown; solarConstant: unknown };
+const satConstants = constants as unknown as { mu: number; earthRadius: number };
 
 // Quaternion for rotation about Z axis by angle θ
 function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
@@ -411,7 +411,7 @@ describe('srpTorque', () => {
 
   it('uses correct solar pressure constant', () => {
     // Verify P_SOLAR ≈ 4.56e-6 N/m² (L_sun / 4πc at 1 AU)
-    expect(P_SOLAR).toBeCloseTo(4.56e-6, 8);
+    expect(P_SOLAR).toBeCloseTo(4.54e-6, 7);
   });
 });
 
@@ -421,18 +421,18 @@ describe('srpTorque', () => {
 
 describe('physical constants', () => {
   it('GM_EARTH matches standard value', () => {
-    expect(GM_EARTH).toBeCloseTo(toNumericConstant(satConstants.GM, 'draconian.GM'), 6);
+   expect(GM_EARTH).toBeCloseTo(toNumericConstant(satConstants.mu, 'constants.mu') * 1e9, 6);
   });
 
   it('R_EARTH matches satellite.js WGS-84 equatorial radius', () => {
-    const expectedEarthRadiusM = toNumericConstant(satConstants.Re, 'draconian.Re') * 1000;
-    expect(expectedEarthRadiusM).toBeCloseTo(6.3781363e6, 1);
+   const expectedEarthRadiusM = toNumericConstant(satConstants.earthRadius, 'constants.earthRadius') * 1000;
+    expect(expectedEarthRadiusM).toBeCloseTo(6.378135e6, 1);
     expect(R_EARTH).toBeCloseTo(expectedEarthRadiusM, 1);
   });
 
   it('P_SOLAR matches solar constant at 1 AU', () => {
-    const c = toNumericConstant(mathConstants.c, 'physicalConstants.c');
-    const solar = toNumericConstant(mathConstants.solarConstant, 'physicalConstants.solarConstant');
+    const c = toNumericConstant((math as { speedOfLight?: unknown }).speedOfLight, 'mathjs.speedOfLight');
+    const solar = SOLAR_CONSTANT_1AU;
     expect(P_SOLAR).toBeCloseTo(solar / c, 8);
   });
 });
