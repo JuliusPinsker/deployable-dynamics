@@ -185,9 +185,13 @@ describe('gravityGradientTorque', () => {
     expect(v3Mag(tau0)).toBeGreaterThan(1e-12);
     expect(v3Mag(tau90)).toBeGreaterThan(1e-12);
     
-    // And torques should differ (different body orientation relative to nadir)
-    const diff = Math.abs(v3Mag(tau0) - v3Mag(tau90));
-    expect(diff).toBeGreaterThan(0); // Different magnitudes due to different body alignment
+    // And torque vectors should differ (different body orientation relative to nadir)
+    const diffVec = {
+      x: tau0.x - tau90.x,
+      y: tau0.y - tau90.y,
+      z: tau0.z - tau90.z,
+    };
+    expect(v3Mag(diffVec)).toBeGreaterThan(1e-12);
   });
 });
 

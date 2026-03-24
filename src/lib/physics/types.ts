@@ -1,23 +1,15 @@
 // Physics engine types for CubeSat solar panel deployment simulation
 
+import type { Quaternion as ThreeQuaternion, Vector3 as ThreeVector3 } from 'three';
 import type { ThermalState, ThermalParams } from './thermalModel';
 import type { FlexParams, FlexState } from './flexModel';
 
 export type { ThermalState, ThermalParams } from './thermalModel';
 export type { FlexParams, FlexState } from './flexModel';
 
-export interface Vector3 {
-  x: number;
-  y: number;
-  z: number;
-}
+export type Vector3 = Pick<ThreeVector3, 'x' | 'y' | 'z'>;
 
-export interface Quaternion {
-  w: number;
-  x: number;
-  y: number;
-  z: number;
-}
+export type Quaternion = Pick<ThreeQuaternion, 'w' | 'x' | 'y' | 'z'>;
 
 export interface HingeParams {
   springConstant: number;    // N·m/rad

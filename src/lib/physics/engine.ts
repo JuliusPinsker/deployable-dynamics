@@ -20,6 +20,7 @@ import {
   type FlexParams,
   DEFAULT_PARAMS,
 } from './types';
+import { Euler, Quaternion as ThreeQuaternion, Vector3 as ThreeVector3 } from 'three';
 
 import { getPanelSpecs } from './panelLayouts';
 import {
@@ -32,70 +33,99 @@ import {
   stepFlexState,
   DEFAULT_FLEX_PARAMS,
 } from './flexModel';
+import { GM_EARTH, R_EARTH } from './constants';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Vector3 helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function v3(x: number, y: number, z: number): Vector3 { return { x, y, z }; }
-function v3Add(a: Vector3, b: Vector3): Vector3 { return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }; }
-function v3Sub(a: Vector3, b: Vector3): Vector3 { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
-function v3Scale(v: Vector3, s: number): Vector3 { return { x: v.x * s, y: v.y * s, z: v.z * s }; }
-function v3Dot(a: Vector3, b: Vector3): number { return a.x * b.x + a.y * b.y + a.z * b.z; }
+function toThreeVector(v: Vector3): ThreeVector3 {
+  return new ThreeVector3(v.x, v.y, v.z);
+}
+
+function fromThreeVector(v: ThreeVector3): Vector3 {
+  return { x: v.x, y: v.y, z: v.z };
+}
+
+function v3(x: number, y: number, z: number): Vector3 {
+  return fromThreeVector(new ThreeVector3(x, y, z));
+}
+
+function v3Add(a: Vector3, b: Vector3): Vector3 {
+  return fromThreeVector(toThreeVector(a).add(toThreeVector(b)));
+}
+
+function v3Sub(a: Vector3, b: Vector3): Vector3 {
+  return fromThreeVector(toThreeVector(a).sub(toThreeVector(b)));
+}
+
+function v3Scale(v: Vector3, s: number): Vector3 {
+  return fromThreeVector(toThreeVector(v).multiplyScalar(s));
+}
+
+function v3Dot(a: Vector3, b: Vector3): number {
+  return toThreeVector(a).dot(toThreeVector(b));
+}
+
 function v3Cross(a: Vector3, b: Vector3): Vector3 {
-  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+  const out = new ThreeVector3();
+  out.crossVectors(toThreeVector(a), toThreeVector(b));
+  return fromThreeVector(out);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Quaternion helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function qIdentity(): Quaternion { return { w: 1, x: 0, y: 0, z: 0 }; }
+function toThreeQuaternion(q: Quaternion): ThreeQuaternion {
+  return new ThreeQuaternion(q.x, q.y, q.z, q.w);
+}
+
+function fromThreeQuaternion(q: ThreeQuaternion): Quaternion {
+  return { w: q.w, x: q.x, y: q.y, z: q.z };
+}
+
+function qIdentity(): Quaternion {
+  return fromThreeQuaternion(new ThreeQuaternion());
+}
 
 function qNormalize(q: Quaternion): Quaternion {
-  const len = Math.sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
-  if (len < 1e-12) return qIdentity();
-  const inv = 1 / len;
-  return { w: q.w * inv, x: q.x * inv, y: q.y * inv, z: q.z * inv };
+  const tq = toThreeQuaternion(q);
+  if (tq.lengthSq() < 1e-24) return qIdentity();
+  tq.normalize();
+  return fromThreeQuaternion(tq);
 }
 
 function qMultiply(a: Quaternion, b: Quaternion): Quaternion {
-  return {
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-  };
+  const out = new ThreeQuaternion();
+  out.multiplyQuaternions(toThreeQuaternion(a), toThreeQuaternion(b));
+  return fromThreeQuaternion(out);
 }
 
 function qConjugate(q: Quaternion): Quaternion {
-  return { w: q.w, x: -q.x, y: -q.y, z: -q.z };
+  const out = toThreeQuaternion(q);
+  out.conjugate();
+  return fromThreeQuaternion(out);
 }
 
 function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
-  const half = angle * 0.5;
-  const s = Math.sin(half);
-  return { w: Math.cos(half), x: axis.x * s, y: axis.y * s, z: axis.z * s };
+  const out = new ThreeQuaternion();
+  out.setFromAxisAngle(toThreeVector(axis).normalize(), angle);
+  return fromThreeQuaternion(out);
 }
 
 /** Reconstruct quaternion from XYZ intrinsic Euler angles (matches THREE.js default). */
 function qFromEuler(e: Vector3): Quaternion {
-  const c1 = Math.cos(e.x * 0.5), s1 = Math.sin(e.x * 0.5);
-  const c2 = Math.cos(e.y * 0.5), s2 = Math.sin(e.y * 0.5);
-  const c3 = Math.cos(e.z * 0.5), s3 = Math.sin(e.z * 0.5);
-  return {
-    w: c1 * c2 * c3 - s1 * s2 * s3,
-    x: s1 * c2 * c3 + c1 * s2 * s3,
-    y: c1 * s2 * c3 - s1 * c2 * s3,
-    z: c1 * c2 * s3 + s1 * s2 * c3,
-  };
+  const out = new ThreeQuaternion();
+  out.setFromEuler(new Euler(e.x, e.y, e.z, 'XYZ'));
+  return fromThreeQuaternion(out);
 }
 
 /** Rotate vector v by quaternion q:  v' = q ⊗ v ⊗ q*  (optimised). */
 function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
-  const qv = v3(q.x, q.y, q.z);
-  const t = v3Scale(v3Cross(qv, v), 2);
-  return v3Add(v, v3Add(v3Scale(t, q.w), v3Cross(qv, t)));
+  const out = toThreeVector(v);
+  out.applyQuaternion(toThreeQuaternion(q));
+  return fromThreeVector(out);
 }
 
 /**
@@ -103,31 +133,8 @@ function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
  * Uses the exact rotation matrix decomposition from THREE.js Euler.setFromQuaternion.
  */
 function qToEuler(q: Quaternion): Vector3 {
-  const { w, x, y, z } = q;
-  const xx = x * x, yy = y * y, zz = z * z;
-
-  // Rotation matrix elements for XYZ decomposition
-  const m13 = 2 * (x * z + w * y);
-  const m23 = 2 * (y * z - w * x);
-  const m33 = 1 - 2 * (xx + yy);
-  const m12 = 2 * (x * y - w * z);
-  const m11 = 1 - 2 * (yy + zz);
-
-  const ey = Math.asin(Math.max(-1, Math.min(1, m13)));
-  let ex: number, ez: number;
-
-  if (Math.abs(m13) < 0.9999999) {
-    ex = Math.atan2(-m23, m33);
-    ez = Math.atan2(-m12, m11);
-  } else {
-    // Gimbal lock
-    const m32 = 2 * (y * z + w * x);
-    const m22 = 1 - 2 * (xx + zz);
-    ex = Math.atan2(m32, m22);
-    ez = 0;
-  }
-
-  return { x: ex, y: ey, z: ez };
+  const euler = new Euler().setFromQuaternion(toThreeQuaternion(q), 'XYZ');
+  return { x: euler.x, y: euler.y, z: euler.z };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,13 +220,9 @@ function computeGravityGradientTorque(
   t: number,
   altitudeM: number,
 ): Vector3 {
-  // Physical constants (SI)
-  const MU = 3.986004418e14;    // m³/s²  Earth gravitational parameter
-  const R_EARTH = 6.371e6;      // m       Earth mean radius
-
   // Orbital mechanics
   const R = R_EARTH + altitudeM;           // orbit radius (m)
-  const T_orbit = 2 * Math.PI * Math.sqrt((R * R * R) / MU); // period (s)
+  const T_orbit = 2 * Math.PI * Math.sqrt((R * R * R) / GM_EARTH); // period (s)
   const n = (2 * Math.PI) / T_orbit;       // mean motion (rad/s)
 
   // Nadir unit vector in world frame: points from spacecraft toward Earth centre.
@@ -238,7 +241,7 @@ function computeGravityGradientTorque(
   const rz = nadirBody.z;
 
   // Gravity gradient factor: 3μ/R³
-  const factor = (3 * MU) / (R * R * R);
+  const factor = (3 * GM_EARTH) / (R * R * R);
 
   // Body-frame torque components (Hughes 1986, Eq. 3.3.10)
   const tauBodyX = factor * (Ib.z - Ib.y) * ry * rz;

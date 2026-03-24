@@ -20,22 +20,24 @@
 
 import type { Vector3, Quaternion, PanelState } from './types';
 import type { PanelSpec } from './panelLayouts';
+import { Quaternion as ThreeQuaternion, Vector3 as ThreeVector3 } from 'three';
+import { C_LIGHT, GM_EARTH, P_SOLAR_1AU, R_EARTH } from './constants';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Physical Constants (WGS-84 / SI)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Earth gravitational parameter μ = GM (m³/s²) */
-export const GM_EARTH = 3.986004418e14;
+export { GM_EARTH } from './constants';
 
 /** Earth mean radius (m) — WGS-84 */
-export const R_EARTH = 6.371e6;
+export { R_EARTH } from './constants';
 
 /** Solar radiation pressure at 1 AU (N/m²) */
-export const P_SOLAR = 4.56e-6;
+export const P_SOLAR = P_SOLAR_1AU;
 
 /** Speed of light (m/s) */
-export const C_LIGHT = 299792458;
+export { C_LIGHT } from './constants';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Orbital Parameters Interface
@@ -80,46 +82,59 @@ export const DEFAULT_ORBITAL_PARAMS: OrbitalParams = {
 //  Helper Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
+function toThreeVector(v: Vector3): ThreeVector3 {
+  return new ThreeVector3(v.x, v.y, v.z);
+}
+
+function fromThreeVector(v: ThreeVector3): Vector3 {
+  return { x: v.x, y: v.y, z: v.z };
+}
+
+function toThreeQuaternion(q: Quaternion): ThreeQuaternion {
+  return new ThreeQuaternion(q.x, q.y, q.z, q.w);
+}
+
+function fromThreeQuaternion(q: ThreeQuaternion): Quaternion {
+  return { w: q.w, x: q.x, y: q.y, z: q.z };
+}
+
 function v3Dot(a: Vector3, b: Vector3): number {
-  return a.x * b.x + a.y * b.y + a.z * b.z;
+  return toThreeVector(a).dot(toThreeVector(b));
 }
 
 function v3Cross(a: Vector3, b: Vector3): Vector3 {
-  return {
-    x: a.y * b.z - a.z * b.y,
-    y: a.z * b.x - a.x * b.z,
-    z: a.x * b.y - a.y * b.x,
-  };
+  const out = new ThreeVector3();
+  out.crossVectors(toThreeVector(a), toThreeVector(b));
+  return fromThreeVector(out);
 }
 
 function v3Scale(v: Vector3, s: number): Vector3 {
-  return { x: v.x * s, y: v.y * s, z: v.z * s };
+  return fromThreeVector(toThreeVector(v).multiplyScalar(s));
 }
 
 function v3Add(a: Vector3, b: Vector3): Vector3 {
-  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+  return fromThreeVector(toThreeVector(a).add(toThreeVector(b)));
 }
 
 function v3Normalize(v: Vector3): Vector3 {
-  const mag = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-  if (mag < 1e-12) return { x: 0, y: 0, z: 1 };
-  return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
-}
-
-function v3Mag(v: Vector3): number {
-  return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  const out = toThreeVector(v);
+  if (out.lengthSq() < 1e-24) return { x: 0, y: 0, z: 1 };
+  out.normalize();
+  return fromThreeVector(out);
 }
 
 /** Rotate vector v by quaternion q: v' = q ⊗ v ⊗ q* */
 function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
-  const qv = { x: q.x, y: q.y, z: q.z };
-  const t = v3Scale(v3Cross(qv, v), 2);
-  return v3Add(v, v3Add(v3Scale(t, q.w), v3Cross(qv, t)));
+  const out = toThreeVector(v);
+  out.applyQuaternion(toThreeQuaternion(q));
+  return fromThreeVector(out);
 }
 
 /** Conjugate quaternion: q* = [w, -x, -y, -z] */
 function qConjugate(q: Quaternion): Quaternion {
-  return { w: q.w, x: -q.x, y: -q.y, z: -q.z };
+  const out = toThreeQuaternion(q);
+  out.conjugate();
+  return fromThreeQuaternion(out);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,7 +341,7 @@ export function srpTorque(
     if (cosTheta <= 0) continue;
 
     // SRP force magnitude
-    const forceMag = P_SOLAR * panelArea * (1 + reflectivity) * cosTheta;
+    const forceMag = P_SOLAR_1AU * panelArea * (1 + reflectivity) * cosTheta;
 
     // Force direction: along panel normal (specular reflection)
     const forceWorld = v3Scale(panelNormalWorld, -forceMag);
@@ -386,20 +401,13 @@ export function updateNadirVector(
     z: Math.cos(inclinationRad),
   };
 
-  // Rodrigues rotation formula: v' = v·cos(θ) + (k×v)·sin(θ) + k·(k·v)·(1-cos(θ))
-  const cosT = Math.cos(dTheta);
-  const sinT = Math.sin(dTheta);
-  const kCrossV = v3Cross(orbitNormal, nadirWorld);
-  const kDotV = v3Dot(orbitNormal, nadirWorld);
+  const updated = toThreeVector(nadirWorld);
+  updated.applyQuaternion(
+    new ThreeQuaternion().setFromAxisAngle(toThreeVector(orbitNormal).normalize(), dTheta),
+  );
+  updated.normalize();
 
-  const updated: Vector3 = {
-    x: nadirWorld.x * cosT + kCrossV.x * sinT + orbitNormal.x * kDotV * (1 - cosT),
-    y: nadirWorld.y * cosT + kCrossV.y * sinT + orbitNormal.y * kDotV * (1 - cosT),
-    z: nadirWorld.z * cosT + kCrossV.z * sinT + orbitNormal.z * kDotV * (1 - cosT),
-  };
-
-  // Re-normalize for numerical stability
-  return v3Normalize(updated);
+  return fromThreeVector(updated);
 }
 
 /**
