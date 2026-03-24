@@ -20,53 +20,15 @@
 
 import type { Vector3, Quaternion, PanelState } from './types';
 import type { PanelSpec } from './panelLayouts';
-import { glMatrix, vec3 } from 'gl-matrix';
-import { constants } from 'satellite.js';
-import * as math from 'mathjs';
+import * as THREE from 'three';
+import * as satellite from 'satellite.js';
+import { GM_EARTH, R_EARTH_M, P_SOLAR, C_LIGHT } from './constants';
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Physical Constants (WGS-84 / SI)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function toNumericConstant(value: unknown, name: string): number {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (value && typeof value === 'object') {
-    const maybeValue = (value as { value?: unknown }).value;
-    if (typeof maybeValue === 'number' && Number.isFinite(maybeValue)) {
-      return maybeValue;
-    }
-
-    const maybeToNumber = (value as { toNumber?: (() => number) | undefined }).toNumber;
-    if (typeof maybeToNumber === 'function') {
-      const numeric = maybeToNumber.call(value);
-      if (Number.isFinite(numeric)) {
-        return numeric;
-      }
-    }
-  }
-
-  throw new Error(`Unable to resolve numeric value for ${name}`);
-}
-
-const satConstants = constants as unknown as { mu: number; earthRadius: number };
-
-/** Earth gravitational parameter μ = GM (m³/s²) */
-export const GM_EARTH = toNumericConstant(satConstants.mu, 'constants.mu') * 1e9;
-
-/** Earth mean radius (m) — WGS-84 */
-export const R_EARTH = toNumericConstant(satConstants.earthRadius, 'constants.earthRadius') * 1000;
-
-/** Speed of light (m/s) */
-export const C_LIGHT = toNumericConstant((math as { speedOfLight?: unknown }).speedOfLight, 'mathjs.speedOfLight');
+const SAT_CONSTANTS = (satellite as unknown as { constants?: { earthRadius?: number } }).constants;
 
 /** Solar irradiance at 1 AU (W/m²), nominal value per ISO 21348 */
 export const SOLAR_CONSTANT_1AU = 1361;
-
-/** Solar radiation pressure at 1 AU (N/m²) */
-export const P_SOLAR = SOLAR_CONSTANT_1AU / C_LIGHT;
+export { GM_EARTH, R_EARTH_M as R_EARTH, P_SOLAR, C_LIGHT } from './constants';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Orbital Parameters Interface
@@ -107,73 +69,49 @@ export const DEFAULT_ORBITAL_PARAMS: OrbitalParams = {
   reflectivity: 0.2,
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helper Functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-glMatrix.setMatrixArrayType(Array);
-
-const arrProto = Array.prototype as number[] & { x?: number; y?: number; z?: number };
-if (!Object.getOwnPropertyDescriptor(arrProto, 'x')) {
-  Object.defineProperties(arrProto, {
-    x: { get() { return this[0]; }, set(v: number) { this[0] = v; } },
-    y: { get() { return this[1]; }, set(v: number) { this[1] = v; } },
-    z: { get() { return this[2]; }, set(v: number) { this[2] = v; } },
-  });
+function vec3(x: number, y: number, z: number): THREE.Vector3 {
+  return new THREE.Vector3(x, y, z);
 }
 
-function v3(x: number, y: number, z: number): Vector3 {
-  return vec3.fromValues(x, y, z) as unknown as Vector3;
+function vecFrom(v: { x: number; y: number; z: number }): THREE.Vector3 {
+  return new THREE.Vector3(v.x, v.y, v.z);
 }
 
-function toVec3(v: Vector3): vec3 {
-  return vec3.fromValues(v.x, v.y, v.z);
+function quatFromLike(q: { w: number; x: number; y: number; z: number }): THREE.Quaternion {
+  return new THREE.Quaternion(q.x, q.y, q.z, q.w);
 }
 
-function v3Dot(a: Vector3, b: Vector3): number {
-  return vec3.dot(toVec3(a), toVec3(b));
+function addVec(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): THREE.Vector3 {
+  return vecFrom(a).add(vecFrom(b));
 }
 
-function v3Cross(a: Vector3, b: Vector3): Vector3 {
-  const out = vec3.create();
-  vec3.cross(out, toVec3(a), toVec3(b));
-  return out as unknown as Vector3;
+function scaleVec(v: { x: number; y: number; z: number }, s: number): THREE.Vector3 {
+  return vecFrom(v).multiplyScalar(s);
 }
 
-function v3Scale(v: Vector3, s: number): Vector3 {
-  const out = vec3.create();
-  vec3.scale(out, toVec3(v), s);
-  return out as unknown as Vector3;
+function dotVec(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
+  return vecFrom(a).dot(vecFrom(b));
 }
 
-function v3Add(a: Vector3, b: Vector3): Vector3 {
-  const out = vec3.create();
-  vec3.add(out, toVec3(a), toVec3(b));
-  return out as unknown as Vector3;
+function crossVec(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): THREE.Vector3 {
+  return new THREE.Vector3().crossVectors(vecFrom(a), vecFrom(b));
 }
 
-function v3Normalize(v: Vector3): Vector3 {
-  const src = toVec3(v);
-  if (vec3.length(src) < 1e-12) return v3(0, 0, 1);
-  const out = vec3.create();
-  vec3.normalize(out, src);
-  return out as unknown as Vector3;
+function normalizeVec(v: { x: number; y: number; z: number }): THREE.Vector3 {
+  const next = vecFrom(v);
+  return next.lengthSq() < 1e-24 ? vec3(0, 0, 1) : next.normalize();
 }
 
-function v3Mag(v: Vector3): number {
-  return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+function magVec(v: { x: number; y: number; z: number }): number {
+  return vecFrom(v).length();
 }
 
-/** Rotate vector v by quaternion q: v' = q ⊗ v ⊗ q* */
-function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
-  const qv = v3(q.x, q.y, q.z);
-  const t = v3Scale(v3Cross(qv, v), 2);
-  return v3Add(v, v3Add(v3Scale(t, q.w), v3Cross(qv, t)));
+function conjQuat(q: { w: number; x: number; y: number; z: number }): THREE.Quaternion {
+  return quatFromLike(q).conjugate();
 }
 
-/** Conjugate quaternion: q* = [w, -x, -y, -z] */
-function qConjugate(q: Quaternion): Quaternion {
-  return { w: q.w, x: -q.x, y: -q.y, z: -q.z };
+function rotateVec(q: { w: number; x: number; y: number; z: number }, v: { x: number; y: number; z: number }): THREE.Vector3 {
+  return vecFrom(v).applyQuaternion(quatFromLike(q));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,8 +125,10 @@ function qConjugate(q: Quaternion): Quaternion {
  * @returns Mean motion in rad/s
  */
 export function meanMotion(altitudeKm: number): number {
-  const R = R_EARTH + altitudeKm * 1000; // Convert km to m
-  return Math.sqrt(GM_EARTH / (R * R * R));
+  // satellite.js uses km; mean motion returned in rad/s
+  const a_km = (SAT_CONSTANTS?.earthRadius ?? 6378.135) + altitudeKm;
+  const mu_km3 = 398600.4418; // km^3/s^2 (WGS-72 standard used by satellite.js)
+  return Math.sqrt(mu_km3 / Math.pow(a_km, 3));
 }
 
 /**
@@ -198,8 +138,7 @@ export function meanMotion(altitudeKm: number): number {
  * @returns Orbital period in seconds
  */
 export function orbitalPeriod(altitudeKm: number): number {
-  const n = meanMotion(altitudeKm);
-  return (2 * Math.PI) / n;
+  return (2 * Math.PI) / meanMotion(altitudeKm);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,8 +177,9 @@ export function gravityGradientTorque(
   nadirWorld: Vector3,
   n: number,
 ): Vector3 {
+  const qBodyThree = quatFromLike(qBody);
   // Transform nadir to body frame: r̂_body = q* ⊗ r̂_world
-  const nadirBody = qRotateVec(qConjugate(qBody), nadirWorld);
+  const nadirBody = vecFrom(nadirWorld).applyQuaternion(qBodyThree.clone().conjugate());
   const rx = nadirBody.x;
   const ry = nadirBody.y;
   const rz = nadirBody.z;
@@ -251,10 +191,10 @@ export function gravityGradientTorque(
   const tauBodyX = factor * (Itotal_diag.z - Itotal_diag.y) * ry * rz;
   const tauBodyY = factor * (Itotal_diag.x - Itotal_diag.z) * rz * rx;
   const tauBodyZ = factor * (Itotal_diag.y - Itotal_diag.x) * rx * ry;
-  const tauBody: Vector3 = v3(tauBodyX, tauBodyY, tauBodyZ);
+  const tauBody = vec3(tauBodyX, tauBodyY, tauBodyZ);
 
   // Rotate torque to world frame
-  return qRotateVec(qBody, tauBody);
+  return tauBody.applyQuaternion(qBodyThree);
 }
 
 /**
@@ -319,7 +259,8 @@ export function srpTorque(
   sunWorld: Vector3,
   reflectivity: number = 0.2,
 ): Vector3 {
-  let totalTorque: Vector3 = v3(0, 0, 0);
+  const qBodyThree = quatFromLike(qBody);
+  let totalTorque = vec3(0, 0, 0);
 
   for (let i = 0; i < panelSpecs.length; i++) {
     const spec = panelSpecs[i];
@@ -342,35 +283,34 @@ export function srpTorque(
 
     // Panel center of pressure in body frame (at panel centroid)
     // Approximate: r_cp ≈ hinge position + (L/2) × panel outward direction
-    const hingePos: Vector3 = v3(spec.pos[0], spec.pos[1], spec.pos[2]);
+    const hingePos = vec3(spec.pos[0], spec.pos[1], spec.pos[2]);
 
     // Panel outward direction rotates with deployment angle
     // Start with mount rotation, then apply hinge rotation
-    const mountRot = spec.rot;
     const cosA = Math.cos(deployAngle);
     const sinA = Math.sin(deployAngle);
 
     // Simplified panel normal (pointing outward from body)
     // This is an approximation — actual normal depends on panel geometry
-    let panelNormalBody: Vector3;
+    let panelNormalBody: THREE.Vector3;
     switch (spec.axis) {
       case 'x':
-        panelNormalBody = v3(cosA, sinA, 0);
+        panelNormalBody = vec3(cosA, sinA, 0);
         break;
       case 'y':
-        panelNormalBody = v3(sinA, cosA, 0);
+        panelNormalBody = vec3(sinA, cosA, 0);
         break;
       case 'z':
       default:
-        panelNormalBody = v3(sinA, 0, cosA);
+        panelNormalBody = vec3(sinA, 0, cosA);
         break;
     }
 
     // Transform to world frame
-    const panelNormalWorld = qRotateVec(qBody, panelNormalBody);
+    const panelNormalWorld = panelNormalBody.clone().applyQuaternion(qBodyThree);
 
     // Illumination factor: cos(θ) between sun and panel normal
-    const cosTheta = v3Dot(sunWorld, panelNormalWorld);
+    const cosTheta = vecFrom(sunWorld).dot(panelNormalWorld);
 
     // Only illuminated side contributes (cosTheta > 0)
     if (cosTheta <= 0) continue;
@@ -379,22 +319,22 @@ export function srpTorque(
     const forceMag = P_SOLAR * panelArea * (1 + reflectivity) * cosTheta;
 
     // Force direction: along panel normal (specular reflection)
-    const forceWorld = v3Scale(panelNormalWorld, -forceMag);
+    const forceWorld = scaleVec(panelNormalWorld, -forceMag);
 
     // Panel center position in body frame
-    const panelCenterBody: Vector3 = v3(
+    const panelCenterBody = vec3(
       hingePos.x + (panelLength / 2) * panelNormalBody.x,
       hingePos.y + (panelLength / 2) * panelNormalBody.y,
       hingePos.z + (panelLength / 2) * panelNormalBody.z,
     );
 
     // Transform to world frame
-    const panelCenterWorld = qRotateVec(qBody, panelCenterBody);
+    const panelCenterWorld = panelCenterBody.clone().applyQuaternion(qBodyThree);
 
     // Torque: τ = r × F
-    const panelTorque = v3Cross(panelCenterWorld, forceWorld);
+    const panelTorque = crossVec(panelCenterWorld, forceWorld);
 
-    totalTorque = v3Add(totalTorque, panelTorque);
+    totalTorque = addVec(totalTorque, panelTorque);
   }
 
   return totalTorque;
@@ -430,22 +370,22 @@ export function updateNadirVector(
   // Orbit normal vector (perpendicular to orbital plane)
   // For inclined orbit: orbit normal in inertial frame
   // Simplified: assume orbit normal is [sin(i), 0, cos(i)] in world frame
-  const orbitNormal: Vector3 = v3(Math.sin(inclinationRad), 0, Math.cos(inclinationRad));
+  const orbitNormal = vec3(Math.sin(inclinationRad), 0, Math.cos(inclinationRad));
 
   // Rodrigues rotation formula: v' = v·cos(θ) + (k×v)·sin(θ) + k·(k·v)·(1-cos(θ))
   const cosT = Math.cos(dTheta);
   const sinT = Math.sin(dTheta);
-  const kCrossV = v3Cross(orbitNormal, nadirWorld);
-  const kDotV = v3Dot(orbitNormal, nadirWorld);
+  const kCrossV = crossVec(orbitNormal, nadirWorld);
+  const kDotV = dotVec(orbitNormal, nadirWorld);
 
-  const updated: Vector3 = v3(
+  const updated = vec3(
     nadirWorld.x * cosT + kCrossV.x * sinT + orbitNormal.x * kDotV * (1 - cosT),
     nadirWorld.y * cosT + kCrossV.y * sinT + orbitNormal.y * kDotV * (1 - cosT),
     nadirWorld.z * cosT + kCrossV.z * sinT + orbitNormal.z * kDotV * (1 - cosT),
   );
 
   // Re-normalize for numerical stability
-  return v3Normalize(updated);
+  return normalizeVec(updated);
 }
 
 /**
@@ -459,8 +399,8 @@ export function initNadirWorld(
   nadirBodyVec: [number, number, number],
   qBody: Quaternion,
 ): Vector3 {
-  const nadirBody: Vector3 = v3(nadirBodyVec[0], nadirBodyVec[1], nadirBodyVec[2]);
-  return v3Normalize(qRotateVec(qBody, nadirBody));
+  const nadirBody: Vector3 = vec3(nadirBodyVec[0], nadirBodyVec[1], nadirBodyVec[2]);
+  return normalizeVec(rotateVec(qBody, nadirBody));
 }
 
 /**
@@ -474,6 +414,6 @@ export function initSunWorld(
   sunBodyVec: [number, number, number],
   qBody: Quaternion,
 ): Vector3 {
-  const sunBody: Vector3 = v3(sunBodyVec[0], sunBodyVec[1], sunBodyVec[2]);
-  return v3Normalize(qRotateVec(qBody, sunBody));
+  const sunBody: Vector3 = vec3(sunBodyVec[0], sunBodyVec[1], sunBodyVec[2]);
+  return normalizeVec(rotateVec(qBody, sunBody));
 }

@@ -2,6 +2,7 @@ import React, { useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
+import { interpolateRdYlBu, interpolateCool } from 'd3-scale-chromatic';
 import type { ConfigType, SpacecraftState, SimulationParams, ThermalState } from '@/lib/physics/types';
 import { DEFAULT_PARAMS } from '@/lib/physics/types';
 
@@ -22,36 +23,15 @@ interface CubeSatModelProps {
 }
 
 /**
- * Interpolates panel colour based on temperature.
- * Cold (< -20°C): blue (#3b82f6)
- * Neutral (~20°C): original panel colour
- * Hot (> 60°C): orange-red (#ef4444)
+ * Maps temperature (°C) to a perceptually uniform color string.
+ * Cold (-20°C) → blue, Neutral (20°C) → yellow, Hot (60°C) → red.
+ * Uses d3-scale-chromatic RdYlBu scale (reversed) — scientifically curated.
  */
 function getThermalColor(temperatureDeg: number): string {
-  // Define temperature range
-  const coldTemp = -20;  // °C - deep blue
-  const neutralTemp = 20; // °C - neutral
-  const hotTemp = 60;     // °C - hot red
-
-  // Clamp temperature
-  const t = Math.max(coldTemp, Math.min(hotTemp, temperatureDeg));
-
-  if (t <= neutralTemp) {
-    // Cold to neutral: blue (#3b82f6) to dark blue (#1e3f8a)
-    const ratio = (t - coldTemp) / (neutralTemp - coldTemp);
-    // Interpolate from cold blue to neutral grey-blue
-    const r = Math.round(59 + ratio * (30 - 59));
-    const g = Math.round(130 + ratio * (63 - 130));
-    const b = Math.round(246 + ratio * (138 - 246));
-    return `rgb(${r}, ${g}, ${b})`;
-  } else {
-    // Neutral to hot: dark blue (#1e3f8a) to orange-red (#ef4444)
-    const ratio = (t - neutralTemp) / (hotTemp - neutralTemp);
-    const r = Math.round(30 + ratio * (239 - 30));
-    const g = Math.round(63 + ratio * (68 - 63));
-    const b = Math.round(138 + ratio * (68 - 138));
-    return `rgb(${r}, ${g}, ${b})`;
-  }
+  const cold = -20;
+  const hot = 60;
+  const t = Math.max(0, Math.min(1, (temperatureDeg - cold) / (hot - cold)));
+  return interpolateRdYlBu(1 - t); // reversed: blue=cold, red=hot
 }
 
 const PANEL_COLOR = '#1a3a5c';
@@ -60,24 +40,9 @@ const BODY_COLOR = '#c0c0c0';
 const CONFIG_COLORS = ['#3b82f6', '#2dd4a8', '#f59e0b', '#a855f7'];
 
 function kelvinToRGB(T: number): string {
-  // Map temperature range 150 K (deep shadow) to 380 K (sunlit) to colour
-  const cold = { r: 30, g: 80, b: 200 };
-  const neutral = { r: 40, g: 160, b: 80 };
-  const hot = { r: 255, g: 80, b: 10 };
+  // Maps panel temperature in Kelvin to a d3-curated cool scale.
   const t = Math.max(0, Math.min(1, (T - 150) / (380 - 150)));
-  let r: number, g: number, b: number;
-  if (t < 0.5) {
-    const s = t / 0.5;
-    r = Math.round(cold.r + s * (neutral.r - cold.r));
-    g = Math.round(cold.g + s * (neutral.g - cold.g));
-    b = Math.round(cold.b + s * (neutral.b - cold.b));
-  } else {
-    const s = (t - 0.5) / 0.5;
-    r = Math.round(neutral.r + s * (hot.r - neutral.r));
-    g = Math.round(neutral.g + s * (hot.g - neutral.g));
-    b = Math.round(neutral.b + s * (hot.b - neutral.b));
-  }
-  return `rgb(${r},${g},${b})`;
+  return interpolateCool(1 - t); // reversed: blue=cold, warm=hot
 }
 
 function useThermalColor(panelIndex: number, thermalEnabled: boolean): string {

@@ -8,14 +8,15 @@ import {
   DEFAULT_THERMAL_PARAMS,
   THERMAL_TIME_SCALE,
 } from '../lib/physics/thermalModel';
-import { GM_EARTH, R_EARTH } from '../lib/physics/orbitalTorques';
+import * as satellite from 'satellite.js';
 import type { ThermalParams, ThermalState } from '../lib/physics/thermalModel';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Physical constants for validation
 // ─────────────────────────────────────────────────────────────────────────────
-const R_E = R_EARTH / 1000;       // km
-const MU = GM_EARTH / 1e9;        // km³/s²
+const SAT_CONSTANTS = (satellite as unknown as { constants?: { earthRadius?: number } }).constants;
+const R_E = SAT_CONSTANTS?.earthRadius ?? 6378.135; // km
+const MU = 398600.4418; // km^3/s^2
 
 describe('computeOrbitPeriodS', () => {
   it('returns ~92.5 minutes for ISS-altitude (400 km)', () => {
