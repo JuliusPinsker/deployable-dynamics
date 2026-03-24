@@ -98,39 +98,39 @@ describe('getPanelSpecs - long-edge configuration (side-mounted panels)', () => 
     topPanels.forEach(s => expect(s.hinge[2]).toBeCloseTo(hz, 6));
     bottomPanels.forEach(s => expect(s.hinge[2]).toBeCloseTo(-hz, 6));
 
-    // Flat stowed mounting on ±Z: top uses +90° about X, bottom uses -90° about X.
-    topPanels.forEach(s => {
-      expect(s.rot[0]).toBeCloseTo(Math.PI / 2, 6);
-      expect(s.rot[1]).toBeCloseTo(0, 6);
-      const zWrap = ((s.rot[2] % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-      const zIsZeroOrPi = Math.abs(zWrap - 0) < 1e-6 || Math.abs(zWrap - Math.PI) < 1e-6;
-      expect(zIsZeroOrPi).toBe(true);
-    });
-    bottomPanels.forEach(s => {
-      expect(s.rot[0]).toBeCloseTo(-Math.PI / 2, 6);
-      expect(s.rot[1]).toBeCloseTo(0, 6);
-      const zWrap = ((s.rot[2] % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-      const zIsZeroOrPi = Math.abs(zWrap - 0) < 1e-6 || Math.abs(zWrap - Math.PI) < 1e-6;
-      expect(zIsZeroOrPi).toBe(true);
-    });
-
-    // Positive deployment angle must move every panel outward from its face.
-    const theta = Math.PI / 6;
-    const zDeltaAt = (s: (typeof specs)[number], thetaRad: number) => {
-      const mount = new Euler(s.rot[0], s.rot[1], s.rot[2], 'XYZ');
-      const offset = new Vector3(s.pos[0], s.pos[1], s.pos[2])
-        .applyEuler(new Euler(thetaRad, 0, 0, 'XYZ'))
-        .applyEuler(mount);
-      return offset.z;
-    };
-
+    // Stowed panel normals must align with ±Z (flat and parallel to ±Z faces).
     specs.forEach(s => {
-      const zStep = zDeltaAt(s, theta);
-      const outwardSign = Math.sign(s.hinge[2]);
-      expect(outwardSign * zStep).toBeGreaterThan(0);
+      const normal = new Vector3(0, 1, 0).applyEuler(new Euler(s.rot[0], s.rot[1], s.rot[2], 'XYZ'));
+      expect(Math.abs(normal.z)).toBeGreaterThan(0.999);
+      expect(Math.abs(normal.x)).toBeLessThan(1e-6);
+      expect(Math.abs(normal.y)).toBeLessThan(1e-6);
     });
 
-    // Opposite top/bottom panels on the same Y side should mirror each other.
+    // All panels must deploy outward from the body for +theta rotation.
+    const theta = Math.PI / 6;
+    for (const s of specs) {
+      const mount = new Euler(s.rot[0], s.rot[1], s.rot[2], 'XYZ');
+      const hingeStep = new Euler(theta, 0, 0, 'XYZ');
+
+      const pos = new Vector3(s.pos[0], s.pos[1], s.pos[2]);
+      const offset = pos.applyEuler(hingeStep).applyEuler(mount);
+      const zStep = s.hinge[2] + offset.z;
+
+      // For top panels (hinge z > 0), outward means z increases from hinge plane.
+      // For bottom panels (hinge z < 0), outward means z decreases from hinge plane.
+      const outwardSign = Math.sign(s.hinge[2]);
+      expect(outwardSign * (zStep - s.hinge[2])).toBeGreaterThan(0);
+
+      // No inward motion at the start of deployment.
+      const smallTheta = Math.PI / 90;
+      const smallStep = new Vector3(s.pos[0], s.pos[1], s.pos[2])
+        .applyEuler(new Euler(smallTheta, 0, 0, 'XYZ'))
+        .applyEuler(mount);
+      const zSmall = s.hinge[2] + smallStep.z;
+      expect(outwardSign * (zSmall - s.hinge[2])).toBeGreaterThan(0);
+    }
+
+    // Opposite top/bottom panels should mirror deployment displacement.
     const topPosY = specs.find(s => s.id === 'SE_Top_PosY');
     const topNegY = specs.find(s => s.id === 'SE_Top_NegY');
     const botPosY = specs.find(s => s.id === 'SE_Bot_PosY');
@@ -141,28 +141,65 @@ describe('getPanelSpecs - long-edge configuration (side-mounted panels)', () => 
     expect(botPosY).toBeDefined();
     expect(botNegY).toBeDefined();
 
-    expect(zDeltaAt(topPosY!, theta)).toBeCloseTo(-zDeltaAt(botPosY!, theta), 6);
-    expect(zDeltaAt(topNegY!, theta)).toBeCloseTo(-zDeltaAt(botNegY!, theta), 6);
+    const zDeltaAt = (s: (typeof specs)[number], thetaRad: number) => {
+      const mount = new Euler(s.rot[0], s.rot[1], s.rot[2], 'XYZ');
+      const offset = new Vector3(s.pos[0], s.pos[1], s.pos[2])
+        .applyEuler(new Euler(thetaRad, 0, 0, 'XYZ'))
+        .applyEuler(mount);
+      return offset.z;
+    };
+
+    const zTopPosY = zDeltaAt(topPosY!, theta);
+    const zTopNegY = zDeltaAt(topNegY!, theta);
+    const zBotPosY = zDeltaAt(botPosY!, theta);
+    const zBotNegY = zDeltaAt(botNegY!, theta);
+
+    expect(zTopPosY).toBeCloseTo(-zBotPosY, 6);
+    expect(zTopNegY).toBeCloseTo(-zBotNegY, 6);
   });
 
-  it('short-edge-long-edge returns 8 top-mounted panels', () => {
+  it('short-edge-long-edge composes unchanged long-edge chain + short-edge geometry', () => {
     const specs = getPanelSpecs('short-edge-long-edge', DEFAULT_PARAMS);
     expect(specs.length).toBe(8);
 
-    // All hinges at Z = hz (top deck)
-    specs.forEach(s => expect(s.hinge[2]).toBeCloseTo(hz, 6));
+    const longEdgeCoupled = specs.slice(0, 4);
+    const shortEdgeCoupled = specs.slice(4, 8);
 
-    // First 4 are LE with slightly reduced length (90%)
-    const reducedLen = DEFAULT_PARAMS.panelLength * 0.9;
-    const lePanels = specs.slice(0, 4);
-    lePanels.forEach(s => expect(s.size[0]).toBeCloseTo(reducedLen, 6));
+    const longEdgeBase = getPanelSpecs('double-long-edge', DEFAULT_PARAMS);
+    const shortEdgeBase = getPanelSpecs('short-edge', DEFAULT_PARAMS);
 
-    // LE panels should use 'y' axis (on ±X edges)
-    lePanels.forEach(s => expect(s.axis).toBe('y'));
+    expect(longEdgeCoupled.length).toBe(4);
+    expect(shortEdgeCoupled.length).toBe(4);
 
-    // SE panels are last 4
-    const sePanels = specs.slice(4);
-    expect(sePanels.length).toBe(4);
+    // Panels 0..3: preserve validated long-edge chain geometry and hierarchy.
+    longEdgeCoupled.forEach((s, i) => {
+      const b = longEdgeBase[i];
+      expect(s.size).toEqual(b.size);
+      expect(s.hinge).toEqual(b.hinge);
+      expect(s.pos).toEqual(b.pos);
+      expect(s.rot).toEqual(b.rot);
+      expect(s.axis).toBe(b.axis);
+      expect(s.parentIndex).toBe(b.parentIndex);
+      expect(s.hingeOffset).toEqual(b.hingeOffset);
+      expect(s.stage).toBe(b.stage);
+      expect(s.maxAngle).toBeCloseTo(b.maxAngle ?? Math.PI / 2, 6);
+    });
+
+    // Panels 4..7: preserve short-edge geometry, keep independent, and assign stage 3.
+    shortEdgeCoupled.forEach((s, i) => {
+      const b = shortEdgeBase[i];
+      expect(s.size).toEqual(b.size);
+      expect(s.hinge).toEqual(b.hinge);
+      expect(s.pos).toEqual(b.pos);
+      expect(s.rot).toEqual(b.rot);
+      expect(s.axis).toBe(b.axis);
+      expect(s.parentIndex).toBeUndefined();
+      expect(s.hingeOffset).toBeUndefined();
+      expect(s.stage).toBe(3);
+      expect(s.maxAngle).toBeCloseTo(Math.PI / 2, 6);
+    });
+
+    expect(specs.map(s => s.stage ?? 1)).toEqual([1, 1, 2, 2, 3, 3, 3, 3]);
   });
 
   it('returns empty array for unknown config', () => {

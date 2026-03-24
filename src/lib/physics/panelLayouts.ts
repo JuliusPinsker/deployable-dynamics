@@ -29,8 +29,8 @@ export type PanelSpec = {
   // Hinge offset in parent's LOCAL frame (used when parentIndex is set)
   hingeOffset?: [number, number, number];
   // ── Sequential deployment support ──
-  // Deployment stage (1 = primary, 2 = secondary). Stage 2 panels don't move until stage 1 completes.
-  stage?: 1 | 2;
+  // Deployment stage (1..3). A stage N panel deploys only after all stages < N complete.
+  stage?: 1 | 2 | 3;
   // Maximum deployment angle in radians (default: π/2 for 90°, but stage 2 can be π for 180°)
   maxAngle?: number;
 };
@@ -63,8 +63,6 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
   // Short-edge panel dimensions
   const SE_LEN = 0.1;
   const SE_SPAN = 0.1;
-
-  const GAP = 0.005;
 
   switch (config) {
     // ══════════════════════════════════════════════════════════════════════════
@@ -222,7 +220,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           size: [SE_LEN, T, SE_SPAN],
           hinge: [0, hy, hz],              // top face, +Y edge
           pos: [0, 0, SE_SPAN / 2],        // stowed inward from +Y edge toward center
-          rot: [Math.PI / 2, 0, Math.PI],  // local Z-flip keeps stow flat and makes +theta deploy outward
+          rot: [Math.PI / 2, 0, Math.PI],  // flat on +Z; Z-flip preserves outward deployment sense
           axis: 'x',
         },
         {
@@ -246,91 +244,29 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           size: [SE_LEN, T, SE_SPAN],
           hinge: [0, -hy, -hz],            // bottom face, -Y edge
           pos: [0, 0, SE_SPAN / 2],        // stowed inward from -Y edge toward center
-          rot: [-Math.PI / 2, 0, Math.PI], // local Z-flip keeps stow flat and makes +theta deploy outward
+          rot: [-Math.PI / 2, 0, Math.PI], // flat on -Z; Z-flip preserves outward deployment sense
           axis: 'x',
         },
       ];
     }
 
-    // ── Coupled: 8 panels on all four edges ──────────────────────────────────
-    // Cross-shaped symmetry around CubeSat
+    // ── Coupled: compose validated long-edge chain + short-edge subsystems ──
     case 'short-edge-long-edge': {
-      const LE_LEN = L * 0.9;              // slightly shorter for coupled config
-      const leSpanOffset = (W + GAP) / 2;  // offset for long-edge sub-panels
+      // Panels 0..3: unchanged long-edge chain (including hierarchy, axes, and dimensions).
+      const longEdgeChain = getPanelSpecs('double-long-edge', params).map((spec, idx) => ({
+        ...spec,
+        id: `CPL_LE_${idx + 1}`,
+      }));
 
-      // Long-edge panels on ±X edges (with Y offset)
-      const lePanels: PanelSpec[] = [
-        {
-          id: 'LE_Front_PosX',
-          size: [LE_LEN, T, W],
-          hinge: [hx, +leSpanOffset, hz],
-          pos: [0, 0, LE_LEN / 2],
-          rot: [Math.PI, 0, 0],
-          axis: 'y',
-        },
-        {
-          id: 'LE_Back_PosX',
-          size: [LE_LEN, T, W],
-          hinge: [hx, -leSpanOffset, hz],
-          pos: [0, 0, LE_LEN / 2],
-          rot: [Math.PI, 0, 0],
-          axis: 'y',
-        },
-        {
-          id: 'LE_Front_NegX',
-          size: [LE_LEN, T, W],
-          hinge: [-hx, +leSpanOffset, hz],
-          pos: [0, 0, LE_LEN / 2],
-          rot: [0, Math.PI, 0],
-          axis: 'y',
-        },
-        {
-          id: 'LE_Back_NegX',
-          size: [LE_LEN, T, W],
-          hinge: [-hx, -leSpanOffset, hz],
-          pos: [0, 0, LE_LEN / 2],
-          rot: [0, Math.PI, 0],
-          axis: 'y',
-        },
-      ];
+      // Panels 4..7: unchanged short-edge geometry as independent stage-3 panels.
+      const shortEdgePanels = getPanelSpecs('short-edge', params).map((spec, idx) => ({
+        ...spec,
+        id: `CPL_SE_${idx + 1}`,
+        stage: 3 as const,
+        maxAngle: Math.PI / 2,
+      }));
 
-      // Short-edge panels on ±Y edges
-      const sePanels: PanelSpec[] = [
-        {
-          id: 'SE_PosY',
-          size: [SE_LEN, T, SE_SPAN],
-          hinge: [0, hy, hz],
-          pos: [0, 0, SE_LEN / 2],
-          rot: [0, Math.PI, 0],
-          axis: 'x',
-        },
-        {
-          id: 'SE_NegY',
-          size: [SE_LEN, T, SE_SPAN],
-          hinge: [0, -hy, hz],
-          pos: [0, 0, SE_LEN / 2],
-          rot: [Math.PI, 0, 0],
-          axis: 'x',
-        },
-        {
-          id: 'SE_PosX',
-          size: [SE_LEN, T, SE_SPAN],
-          hinge: [hx, 0, hz],
-          pos: [0, 0, SE_LEN / 2],
-          rot: [Math.PI, 0, 0],
-          axis: 'y',
-        },
-        {
-          id: 'SE_NegX',
-          size: [SE_LEN, T, SE_SPAN],
-          hinge: [-hx, 0, hz],
-          pos: [0, 0, SE_LEN / 2],
-          rot: [0, Math.PI, 0],
-          axis: 'y',
-        },
-      ];
-
-      return [...lePanels, ...sePanels];
+      return [...longEdgeChain, ...shortEdgePanels];
     }
 
     default:

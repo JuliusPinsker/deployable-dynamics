@@ -584,22 +584,34 @@ export function stepSimulation(
     // ── Stage-aware deployment parameters ────────────────────────────────────
     const panelStage = spec.stage ?? 1;
     const panelMaxAngle = spec.maxAngle ?? params.hinge.stopAngle;
-    const panelStartDelay = config === 'short-edge'
-      ? (params.hinge.shortEdgeStartDelays?.[i] ?? 0)
-      : 0;
+    const panelStartDelay = (() => {
+      if (config === 'short-edge') {
+        return params.hinge.shortEdgeStartDelays?.[i] ?? 0;
+      }
+
+      if (config === 'short-edge-long-edge' && panelStage === 3) {
+        const coupledShortEdgeIndex = i - 4;
+        if (coupledShortEdgeIndex >= 0 && coupledShortEdgeIndex < 4) {
+          return params.hinge.shortEdgeStartDelays?.[coupledShortEdgeIndex] ?? 0;
+        }
+      }
+
+      return 0;
+    })();
     const panelStartTime = (panelStage - 1) * deployDuration + panelStartDelay;
 
-    // Stage 2 panels must wait until ALL stage 1 panels are fully deployed
-    const stage1Complete = panelStage <= 1 || state.panels.every((p, idx) => {
+    // Stage N panels wait until all earlier stages are fully deployed or stuck.
+    const previousStagesComplete = panelStage <= 1 || state.panels.every((p, idx) => {
       const s = specs[idx];
-      return (s.stage ?? 1) !== 1 || p.deployed || p.stuck;
+      const candidateStage = s.stage ?? 1;
+      return candidateStage >= panelStage || p.deployed || p.stuck;
     });
 
     let thetaNew: number, omegaRelNew: number, deployedNew: boolean;
     let contactForceNew: number, hingeTorque: number, thetaDDot: number;
 
-    if (!stage1Complete) {
-      // ── Stage 2 panel waiting — hold perfectly still ───────────────────
+    if (!previousStagesComplete) {
+      // ── Waiting for previous stages — hold perfectly still ─────────────
       thetaNew = theta;
       omegaRelNew = 0;
       deployedNew = false;
@@ -608,7 +620,7 @@ export function stepSimulation(
       thetaDDot = 0;
 
     } else if ((state.time + dt) < panelStartTime) {
-      // Hold panel at stowed angle until its delayed start time.
+      // ── Delayed activation window — hold panel stowed until its start time ──
       thetaNew = theta;
       omegaRelNew = 0;
       deployedNew = false;
@@ -642,10 +654,7 @@ export function stepSimulation(
 
     } else {
       // ── Physics-driven hinge (stage-aware) ─────────────────────────────────
-      const h = params.hinge as typeof params.hinge & {
-        hingeModel?: string;
-        bistability?: { bistabilityCoeff: number };
-      };
+      const h = params.hinge;
       // Use panel-specific max angle as the target stop angle
       const stopAngle = panelMaxAngle;
 
