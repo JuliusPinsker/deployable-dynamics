@@ -29,8 +29,8 @@ export type PanelSpec = {
   // Hinge offset in parent's LOCAL frame (used when parentIndex is set)
   hingeOffset?: [number, number, number];
   // ── Sequential deployment support ──
-  // Deployment stage (1 = primary, 2 = secondary, 3 = tertiary for coupled configs).
-  stage?: 1 | 2 | 3;
+  // Deployment stage (1 = primary, 2 = secondary). Stage 2 panels don't move until stage 1 completes.
+  stage?: 1 | 2;
   // Maximum deployment angle in radians (default: π/2 for 90°, but stage 2 can be π for 180°)
   maxAngle?: number;
 };
@@ -213,42 +213,41 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
       return [...firstStagePanels, ...secondStagePanels];
     }
 
-    // ── Short-edge: 4 panels in cross pattern on ±Y edges ────────────────────
-    // Panels deploy outward in ±Y directions
+    // ── Short-edge: 4 panels on ±Z faces (top and bottom) ────────────────────
+    // Hinges lie on ±Y edges of top and bottom decks, all rotating about X.
     case 'short-edge': {
       return [
         {
-          id: 'SE_PosY',
+          id: 'SE_Top_PosY',
           size: [SE_LEN, T, SE_SPAN],
-          hinge: [0, hy, hz],              // +Y edge of top deck
-          pos: [0, 0, SE_LEN / 2],
-          rot: [0, Math.PI, 0],            // mounting rotation for +Y deployment
-          axis: 'x',                       // rotate around X axis
-        },
-        {
-          id: 'SE_NegY',
-          size: [SE_LEN, T, SE_SPAN],
-          hinge: [0, -hy, hz],             // -Y edge of top deck
-          pos: [0, 0, SE_LEN / 2],
-          rot: [Math.PI, 0, 0],            // mounting rotation for -Y deployment
+          hinge: [0, hy, hz],              // top face, +Y edge
+          pos: [0, 0, SE_SPAN / 2],        // stowed inward from +Y edge toward center
+          rot: [Math.PI / 2, 0, Math.PI],  // local Z-flip keeps stow flat and makes +theta deploy outward
           axis: 'x',
         },
-        // Additional panels on ±X edges for cross pattern
         {
-          id: 'SE_PosX',
+          id: 'SE_Top_NegY',
           size: [SE_LEN, T, SE_SPAN],
-          hinge: [hx, 0, hz],
-          pos: [0, 0, SE_LEN / 2],
-          rot: [Math.PI, 0, 0],
-          axis: 'y',
+          hinge: [0, -hy, hz],             // top face, -Y edge
+          pos: [0, 0, -SE_SPAN / 2],       // stowed inward from -Y edge toward center
+          rot: [Math.PI / 2, 0, 0],        // flat on +Z face (panel normal +Z)
+          axis: 'x',
         },
         {
-          id: 'SE_NegX',
+          id: 'SE_Bot_PosY',
           size: [SE_LEN, T, SE_SPAN],
-          hinge: [-hx, 0, hz],
-          pos: [0, 0, SE_LEN / 2],
-          rot: [0, Math.PI, 0],
-          axis: 'y',
+          hinge: [0, hy, -hz],             // bottom face, +Y edge
+          pos: [0, 0, -SE_SPAN / 2],       // stowed inward from +Y edge toward center
+          rot: [-Math.PI / 2, 0, 0],       // flat on -Z face (panel normal -Z)
+          axis: 'x',
+        },
+        {
+          id: 'SE_Bot_NegY',
+          size: [SE_LEN, T, SE_SPAN],
+          hinge: [0, -hy, -hz],            // bottom face, -Y edge
+          pos: [0, 0, SE_SPAN / 2],        // stowed inward from -Y edge toward center
+          rot: [-Math.PI / 2, 0, Math.PI], // local Z-flip keeps stow flat and makes +theta deploy outward
+          axis: 'x',
         },
       ];
     }

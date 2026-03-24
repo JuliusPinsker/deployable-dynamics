@@ -98,4 +98,41 @@ describe('sample simulation (3U)', () => {
     expect(last.panelAngles[2]).toBeCloseTo(stage2MaxAngle, 5);
     expect(last.panelAngles[3]).toBeCloseTo(stage2MaxAngle, 5);
   });
+
+  it('short-edge supports per-panel delayed activation with unchanged motion profile', () => {
+    const delay = 1.5;
+    const params = {
+      ...DEFAULT_PARAMS,
+      hinge: {
+        ...DEFAULT_PARAMS.hinge,
+        deployDuration: 2.0,
+        shortEdgeStartDelays: [0, delay, 0, delay],
+      },
+    } as typeof DEFAULT_PARAMS & {
+      hinge: typeof DEFAULT_PARAMS.hinge & { shortEdgeStartDelays: [number, number, number, number] }
+    };
+
+    const frames = runFullSimulation('short-edge', params, 6);
+    expect(frames.length).toBeGreaterThan(0);
+
+    const beforeDelay = frames.findLast(f => f.time < delay - 0.1);
+    expect(beforeDelay).toBeDefined();
+    expect(beforeDelay!.panelAngles[1]).toBeCloseTo(0, 6);
+    expect(beforeDelay!.panelAngles[3]).toBeCloseTo(0, 6);
+
+    const afterDelay = frames.find(f => f.time > delay + 0.2);
+    expect(afterDelay).toBeDefined();
+    expect(afterDelay!.panelAngles[1]).toBeGreaterThan(0);
+    expect(afterDelay!.panelAngles[3]).toBeGreaterThan(0);
+
+    // Same profile, only shifted in time.
+    const sampleT = 0.8;
+    const leaderFrame = frames.find(f => f.time >= sampleT);
+    const delayedFrame = frames.find(f => f.time >= delay + sampleT);
+    expect(leaderFrame).toBeDefined();
+    expect(delayedFrame).toBeDefined();
+
+    expect(delayedFrame!.panelAngles[1]).toBeCloseTo(leaderFrame!.panelAngles[0], 1);
+    expect(delayedFrame!.panelAngles[3]).toBeCloseTo(leaderFrame!.panelAngles[2], 1);
+  });
 });
