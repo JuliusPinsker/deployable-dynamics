@@ -14,13 +14,14 @@ import {
   type SimulationParams,
   type SpacecraftState,
   type PanelState,
-  type Vector3,
-  type Quaternion,
   type ThermalParams,
   type FlexParams,
+  Vector3,
+  Quaternion,
+  Euler,
   DEFAULT_PARAMS,
 } from './types';
-import { Euler, Quaternion as ThreeQuaternion, Vector3 as ThreeVector3 } from 'three';
+import { MathUtils } from 'three';
 
 import { getPanelSpecs } from './panelLayouts';
 import {
@@ -34,108 +35,6 @@ import {
   DEFAULT_FLEX_PARAMS,
 } from './flexModel';
 import { GM_EARTH, R_EARTH } from './constants';
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Vector3 helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function toThreeVector(v: Vector3): ThreeVector3 {
-  return new ThreeVector3(v.x, v.y, v.z);
-}
-
-function fromThreeVector(v: ThreeVector3): Vector3 {
-  return { x: v.x, y: v.y, z: v.z };
-}
-
-function v3(x: number, y: number, z: number): Vector3 {
-  return fromThreeVector(new ThreeVector3(x, y, z));
-}
-
-function v3Add(a: Vector3, b: Vector3): Vector3 {
-  return fromThreeVector(toThreeVector(a).add(toThreeVector(b)));
-}
-
-function v3Sub(a: Vector3, b: Vector3): Vector3 {
-  return fromThreeVector(toThreeVector(a).sub(toThreeVector(b)));
-}
-
-function v3Scale(v: Vector3, s: number): Vector3 {
-  return fromThreeVector(toThreeVector(v).multiplyScalar(s));
-}
-
-function v3Dot(a: Vector3, b: Vector3): number {
-  return toThreeVector(a).dot(toThreeVector(b));
-}
-
-function v3Cross(a: Vector3, b: Vector3): Vector3 {
-  const out = new ThreeVector3();
-  out.crossVectors(toThreeVector(a), toThreeVector(b));
-  return fromThreeVector(out);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Quaternion helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function toThreeQuaternion(q: Quaternion): ThreeQuaternion {
-  return new ThreeQuaternion(q.x, q.y, q.z, q.w);
-}
-
-function fromThreeQuaternion(q: ThreeQuaternion): Quaternion {
-  return { w: q.w, x: q.x, y: q.y, z: q.z };
-}
-
-function qIdentity(): Quaternion {
-  return fromThreeQuaternion(new ThreeQuaternion());
-}
-
-function qNormalize(q: Quaternion): Quaternion {
-  const tq = toThreeQuaternion(q);
-  if (tq.lengthSq() < 1e-24) return qIdentity();
-  tq.normalize();
-  return fromThreeQuaternion(tq);
-}
-
-function qMultiply(a: Quaternion, b: Quaternion): Quaternion {
-  const out = new ThreeQuaternion();
-  out.multiplyQuaternions(toThreeQuaternion(a), toThreeQuaternion(b));
-  return fromThreeQuaternion(out);
-}
-
-function qConjugate(q: Quaternion): Quaternion {
-  const out = toThreeQuaternion(q);
-  out.conjugate();
-  return fromThreeQuaternion(out);
-}
-
-function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
-  const out = new ThreeQuaternion();
-  out.setFromAxisAngle(toThreeVector(axis).normalize(), angle);
-  return fromThreeQuaternion(out);
-}
-
-/** Reconstruct quaternion from XYZ intrinsic Euler angles (matches THREE.js default). */
-function qFromEuler(e: Vector3): Quaternion {
-  const out = new ThreeQuaternion();
-  out.setFromEuler(new Euler(e.x, e.y, e.z, 'XYZ'));
-  return fromThreeQuaternion(out);
-}
-
-/** Rotate vector v by quaternion q:  v' = q ⊗ v ⊗ q*  (optimised). */
-function qRotateVec(q: Quaternion, v: Vector3): Vector3 {
-  const out = toThreeVector(v);
-  out.applyQuaternion(toThreeQuaternion(q));
-  return fromThreeVector(out);
-}
-
-/**
- * Convert quaternion → XYZ intrinsic Euler angles (matches THREE.js default order).
- * Uses the exact rotation matrix decomposition from THREE.js Euler.setFromQuaternion.
- */
-function qToEuler(q: Quaternion): Vector3 {
-  const euler = new Euler().setFromQuaternion(toThreeQuaternion(q), 'XYZ');
-  return { x: euler.x, y: euler.y, z: euler.z };
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Inertia tensor helpers (diagonal in body frame)
@@ -153,11 +52,11 @@ function bodyInertiaDiag(params: SimulationParams): Vector3 {
   const h = params.bodyHeight;
   const d = params.bodyDepth;
   const m = params.bodyMass;
-  return {
-    x: (1 / 12) * m * (h * h + d * d),
-    y: (1 / 12) * m * (w * w + d * d),
-    z: (1 / 12) * m * (w * w + h * h),
-  };
+  return new Vector3(
+    (1 / 12) * m * (h * h + d * d),
+    (1 / 12) * m * (w * w + d * d),
+    (1 / 12) * m * (w * w + h * h),
+  );
 }
 
 /**
@@ -170,11 +69,11 @@ function bodyInertiaDiag(params: SimulationParams): Vector3 {
  *   Izz = (1/3)  m L² + (1/12) m t²     ← moment about hinge axis
  */
 function panelInertiaDiag(m: number, L: number, W: number, t: number): Vector3 {
-  return {
-    x: (1 / 12) * m * (W * W + t * t),
-    y: (1 / 3) * m * L * L + (1 / 12) * m * W * W,
-    z: (1 / 3) * m * L * L + (1 / 12) * m * t * t,
-  };
+  return new Vector3(
+    (1 / 12) * m * (W * W + t * t),
+    (1 / 3) * m * L * L + (1 / 12) * m * W * W,
+    (1 / 3) * m * L * L + (1 / 12) * m * t * t,
+  );
 }
 
 /**
@@ -182,14 +81,15 @@ function panelInertiaDiag(m: number, L: number, W: number, t: number): Vector3 {
  * Strategy: rotate τ into body frame → divide by diagonal I → rotate back.
  */
 function applyInverseInertia(Idiag: Vector3, q: Quaternion, torqueWorld: Vector3): Vector3 {
-  const tBody = qRotateVec(qConjugate(q), torqueWorld);
-  const aBody = { x: tBody.x / Idiag.x, y: tBody.y / Idiag.y, z: tBody.z / Idiag.z };
-  return qRotateVec(q, aBody);
+  const tBody = new Vector3(torqueWorld.x, torqueWorld.y, torqueWorld.z)
+    .applyQuaternion(new Quaternion(q.x, q.y, q.z, q.w).clone().conjugate());
+  const aBody = new Vector3(tBody.x / Idiag.x, tBody.y / Idiag.y, tBody.z / Idiag.z);
+  return aBody.applyQuaternion(new Quaternion(q.x, q.y, q.z, q.w));
 }
 
 /** I_body · ω  (diagonal body frame). */
 function applyInertia(Idiag: Vector3, w: Vector3): Vector3 {
-  return { x: Idiag.x * w.x, y: Idiag.y * w.y, z: Idiag.z * w.z };
+  return new Vector3(Idiag.x * w.x, Idiag.y * w.y, Idiag.z * w.z);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,14 +128,11 @@ function computeGravityGradientTorque(
   // Nadir unit vector in world frame: points from spacecraft toward Earth centre.
   // For equatorial circular orbit in our convention (X=right, Y=forward, Z=up),
   // nadir rotates in the Y-Z plane as the satellite orbits.
-  const nadirWorld: Vector3 = {
-    x: 0,
-    y: -Math.sin(n * t),
-    z: -Math.cos(n * t),
-  };
+  const nadirWorld = new Vector3(0, -Math.sin(n * t), -Math.cos(n * t));
 
   // Transform nadir to body frame: r̂_body = q* ⊗ r̂_world
-  const nadirBody = qRotateVec(qConjugate(qBody), nadirWorld);
+  const qBodySafe = new Quaternion(qBody.x, qBody.y, qBody.z, qBody.w);
+  const nadirBody = nadirWorld.clone().applyQuaternion(qBodySafe.clone().conjugate());
   const rx = nadirBody.x;
   const ry = nadirBody.y;
   const rz = nadirBody.z;
@@ -247,10 +144,10 @@ function computeGravityGradientTorque(
   const tauBodyX = factor * (Ib.z - Ib.y) * ry * rz;
   const tauBodyY = factor * (Ib.x - Ib.z) * rz * rx;
   const tauBodyZ = factor * (Ib.y - Ib.x) * rx * ry;
-  const tauBody: Vector3 = { x: tauBodyX, y: tauBodyY, z: tauBodyZ };
+  const tauBody = new Vector3(tauBodyX, tauBodyY, tauBodyZ);
 
   // Rotate torque back to world frame for accumulation with hinge torques
-  return qRotateVec(qBody, tauBody);
+  return tauBody.applyQuaternion(qBodySafe);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -295,23 +192,21 @@ export function integrateBodyRK4(
     q: Quaternion,
     omega: Vector3,
   ): { dq: Quaternion; dOmega: Vector3 } {
+    const qSafe = new Quaternion(q.x, q.y, q.z, q.w);
+    const omegaSafe = new Vector3(omega.x, omega.y, omega.z);
+
     // Kinematic equation: dq/dt = 0.5 · [0, ω_world] ⊗ q  (world-frame convention)
-    const omegaQuat: Quaternion = { w: 0, x: omega.x, y: omega.y, z: omega.z };
-    const qDot = qMultiply(omegaQuat, q);
-    const dq: Quaternion = {
-      w: 0.5 * qDot.w,
-      x: 0.5 * qDot.x,
-      y: 0.5 * qDot.y,
-      z: 0.5 * qDot.z,
-    };
+    const omegaQuat = new Quaternion(omegaSafe.x, omegaSafe.y, omegaSafe.z, 0);
+    const qDot = omegaQuat.clone().multiply(qSafe);
+    const dq = new Quaternion(0.5 * qDot.x, 0.5 * qDot.y, 0.5 * qDot.z, 0.5 * qDot.w);
 
     // Euler's equation: I·α = τ - ω×(I·ω)
     // Compute gyroscopic term in world frame via body frame
-    const omegaBody = qRotateVec(qConjugate(q), omega);
+    const omegaBody = omegaSafe.clone().applyQuaternion(qSafe.clone().conjugate());
     const IomegaBody = applyInertia(Ib, omegaBody);
-    const IomegaWorld = qRotateVec(q, IomegaBody);
-    const gyro = v3Cross(omega, IomegaWorld);
-    const netTorque = v3Sub(torqueWorld, gyro);
+    const IomegaWorld = IomegaBody.clone().applyQuaternion(qSafe.clone());
+    const gyro = new Vector3().crossVectors(omegaSafe, IomegaWorld);
+    const netTorque = new Vector3(torqueWorld.x, torqueWorld.y, torqueWorld.z).sub(gyro);
     const dOmega = applyInverseInertia(Ib, q, netTorque);
 
     return { dq, dOmega };
@@ -319,12 +214,12 @@ export function integrateBodyRK4(
 
   // ── Helper: add scaled quaternion derivative to quaternion ────────────────
   function qAddScaled(q: Quaternion, dq: Quaternion, s: number): Quaternion {
-    return {
-      w: q.w + dq.w * s,
-      x: q.x + dq.x * s,
-      y: q.y + dq.y * s,
-      z: q.z + dq.z * s,
-    };
+    return new Quaternion(
+      q.x + dq.x * s,
+      q.y + dq.y * s,
+      q.z + dq.z * s,
+      q.w + dq.w * s,
+    );
   }
 
   // ── RK4 stages ───────────────────────────────────────────────────────────
@@ -332,37 +227,37 @@ export function integrateBodyRK4(
   const k1 = deriv(qBody, omegaBody);
 
   // k2 (midpoint using k1)
-  const q2 = qNormalize(qAddScaled(qBody, k1.dq, 0.5 * dt));
-  const omega2 = v3Add(omegaBody, v3Scale(k1.dOmega, 0.5 * dt));
+  const q2 = qAddScaled(qBody, k1.dq, 0.5 * dt).clone().normalize();
+  const omega2 = new Vector3(omegaBody.x, omegaBody.y, omegaBody.z).add(k1.dOmega.clone().multiplyScalar(0.5 * dt));
   const k2 = deriv(q2, omega2);
 
   // k3 (midpoint using k2)
-  const q3 = qNormalize(qAddScaled(qBody, k2.dq, 0.5 * dt));
-  const omega3 = v3Add(omegaBody, v3Scale(k2.dOmega, 0.5 * dt));
+  const q3 = qAddScaled(qBody, k2.dq, 0.5 * dt).clone().normalize();
+  const omega3 = new Vector3(omegaBody.x, omegaBody.y, omegaBody.z).add(k2.dOmega.clone().multiplyScalar(0.5 * dt));
   const k3 = deriv(q3, omega3);
 
   // k4 (full step using k3)
-  const q4 = qNormalize(qAddScaled(qBody, k3.dq, dt));
-  const omega4 = v3Add(omegaBody, v3Scale(k3.dOmega, dt));
+  const q4 = qAddScaled(qBody, k3.dq, dt).clone().normalize();
+  const omega4 = new Vector3(omegaBody.x, omegaBody.y, omegaBody.z).add(k3.dOmega.clone().multiplyScalar(dt));
   const k4 = deriv(q4, omega4);
 
   // ── Weighted combination ─────────────────────────────────────────────────
   // y_{n+1} = y_n + (dt/6)(k1 + 2k2 + 2k3 + k4)
-  const dqFinal: Quaternion = {
-    w: (k1.dq.w + 2 * k2.dq.w + 2 * k3.dq.w + k4.dq.w) / 6,
-    x: (k1.dq.x + 2 * k2.dq.x + 2 * k3.dq.x + k4.dq.x) / 6,
-    y: (k1.dq.y + 2 * k2.dq.y + 2 * k3.dq.y + k4.dq.y) / 6,
-    z: (k1.dq.z + 2 * k2.dq.z + 2 * k3.dq.z + k4.dq.z) / 6,
-  };
+  const dqFinal = new Quaternion(
+    (k1.dq.x + 2 * k2.dq.x + 2 * k3.dq.x + k4.dq.x) / 6,
+    (k1.dq.y + 2 * k2.dq.y + 2 * k3.dq.y + k4.dq.y) / 6,
+    (k1.dq.z + 2 * k2.dq.z + 2 * k3.dq.z + k4.dq.z) / 6,
+    (k1.dq.w + 2 * k2.dq.w + 2 * k3.dq.w + k4.dq.w) / 6,
+  );
 
-  const dOmegaFinal: Vector3 = {
-    x: (k1.dOmega.x + 2 * k2.dOmega.x + 2 * k3.dOmega.x + k4.dOmega.x) / 6,
-    y: (k1.dOmega.y + 2 * k2.dOmega.y + 2 * k3.dOmega.y + k4.dOmega.y) / 6,
-    z: (k1.dOmega.z + 2 * k2.dOmega.z + 2 * k3.dOmega.z + k4.dOmega.z) / 6,
-  };
+  const dOmegaFinal = new Vector3(
+    (k1.dOmega.x + 2 * k2.dOmega.x + 2 * k3.dOmega.x + k4.dOmega.x) / 6,
+    (k1.dOmega.y + 2 * k2.dOmega.y + 2 * k3.dOmega.y + k4.dOmega.y) / 6,
+    (k1.dOmega.z + 2 * k2.dOmega.z + 2 * k3.dOmega.z + k4.dOmega.z) / 6,
+  );
 
-  const qBodyNew = qNormalize(qAddScaled(qBody, dqFinal, dt));
-  const omegaBodyNew = v3Add(omegaBody, v3Scale(dOmegaFinal, dt));
+  const qBodyNew = qAddScaled(qBody, dqFinal, dt).clone().normalize();
+  const omegaBodyNew = new Vector3(omegaBody.x, omegaBody.y, omegaBody.z).add(dOmegaFinal.clone().multiplyScalar(dt));
 
   return { qBodyNew, omegaBodyNew };
 }
@@ -399,14 +294,16 @@ export function computeTotalAngularMomentum(
   params: SimulationParams = DEFAULT_PARAMS,
 ): Vector3 {
   const specs = getPanelSpecs(config, params);
-  const qBody = state._bodyQ ? { ...state._bodyQ } : qFromEuler(state.orientation);
-  const omegaBody = state.angularVelocity;
+  const qBody = state._bodyQ
+    ? new Quaternion(state._bodyQ.x, state._bodyQ.y, state._bodyQ.z, state._bodyQ.w)
+    : new Quaternion().setFromEuler(new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'));
+  const omegaBody = new Vector3(state.angularVelocity.x, state.angularVelocity.y, state.angularVelocity.z);
 
   // ── Body contribution: H_body = R_body · I_body_diag · R_body^T · ω_body ──
   const Ib = bodyInertiaDiag(params);
-  const omegaBodyLocal = qRotateVec(qConjugate(qBody), omegaBody);
+  const omegaBodyLocal = omegaBody.clone().applyQuaternion(qBody.clone().conjugate());
   const HbodyLocal = applyInertia(Ib, omegaBodyLocal);
-  const Htotal: Vector3 = { ...qRotateVec(qBody, HbodyLocal) };
+  const Htotal = HbodyLocal.clone().applyQuaternion(qBody.clone());
 
   // ── Panel contributions ────────────────────────────────────────────────────
   for (let i = 0; i < state.panels.length; i++) {
@@ -417,21 +314,21 @@ export function computeTotalAngularMomentum(
     const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
 
     // Panel orientation quaternion
-    const qMount = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
+    const qMount = new Quaternion().setFromEuler(new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'));
     const aLocal = hingeAxisUnit(spec.axis);
-    const aBody = qRotateVec(qMount, aLocal);
-    const aWorld = qRotateVec(qBody, aBody);
+    const aBody = aLocal.clone().applyQuaternion(qMount.clone());
+    const aWorld = aBody.clone().applyQuaternion(qBody.clone());
 
-    const qHinge = qFromAxisAngle(aLocal, panel.angle);
-    const qPanel = qNormalize(qMultiply(qMultiply(qBody, qMount), qHinge));
+    const qHinge = new Quaternion().setFromAxisAngle(aLocal.clone().normalize(), panel.angle);
+    const qPanel = qBody.clone().multiply(qMount.clone()).multiply(qHinge).normalize();
 
     // Panel angular velocity in world frame: ω_panel = ω_body + θ̇ · â_world
-    const omegaPanel = v3Add(omegaBody, v3Scale(aWorld, panel.angularVelocity));
+    const omegaPanel = omegaBody.clone().add(aWorld.clone().multiplyScalar(panel.angularVelocity));
 
     // Rotate ω to panel body frame, apply diagonal inertia, rotate back
-    const omegaPanelLocal = qRotateVec(qConjugate(qPanel), omegaPanel);
+    const omegaPanelLocal = omegaPanel.clone().applyQuaternion(qPanel.clone().conjugate());
     const HpanelLocal = applyInertia(Ip, omegaPanelLocal);
-    const HpanelWorld = qRotateVec(qPanel, HpanelLocal);
+    const HpanelWorld = HpanelLocal.clone().applyQuaternion(qPanel.clone());
 
     Htotal.x += HpanelWorld.x;
     Htotal.y += HpanelWorld.y;
@@ -448,9 +345,9 @@ export function computeTotalAngularMomentum(
 /** Unit vector for hinge axis in spacecraft body frame. */
 function hingeAxisUnit(axis: 'x' | 'y' | 'z'): Vector3 {
   switch (axis) {
-    case 'x': return { x: 1, y: 0, z: 0 };
-    case 'y': return { x: 0, y: 1, z: 0 };
-    case 'z': return { x: 0, y: 0, z: 1 };
+    case 'x': return new Vector3(1, 0, 0);
+    case 'y': return new Vector3(0, 1, 0);
+    case 'z': return new Vector3(0, 0, 1);
   }
 }
 
@@ -468,8 +365,8 @@ function createInitialPanels(config: ConfigType): PanelState[] {
     stuckAngle: 0,
     deployed: false,
     contactForce: 0,
-    _q: qIdentity(),
-    _omega: v3(0, 0, 0),
+    _q: new Quaternion(),
+    _omega: new Vector3(0, 0, 0),
   }));
 }
 
@@ -480,13 +377,13 @@ export function createInitialState(
 ): SpacecraftState {
   const panels = createInitialPanels(config);
   return {
-    angularVelocity: { x: 0, y: 0, z: 0 },
-    angularAcceleration: { x: 0, y: 0, z: 0 },
-    orientation: { x: 0, y: 0, z: 0 },
+    angularVelocity: new Vector3(0, 0, 0),
+    angularAcceleration: new Vector3(0, 0, 0),
+    orientation: new Vector3(0, 0, 0),
     panels,
     time: 0,
     deploying: false,
-    _bodyQ: qIdentity(),
+    _bodyQ: new Quaternion(),
     thermalState: thermalParams ? initThermalState(thermalParams) : undefined,
     thermalParams: thermalParams,
     flexState: flexParams ? panels.map(() => initFlexState(flexParams)) : undefined,
@@ -516,8 +413,10 @@ export function stepSimulation(
 
   // ── Current body state ────────────────────────────────────────────────────
   const Ib = bodyInertiaDiag(params);
-  const qBody = state._bodyQ ? { ...state._bodyQ } : qFromEuler(state.orientation);
-  const omegaBody: Vector3 = { ...state.angularVelocity }; // world-frame
+  const qBody = state._bodyQ
+    ? new Quaternion(state._bodyQ.x, state._bodyQ.y, state._bodyQ.z, state._bodyQ.w)
+    : new Quaternion().setFromEuler(new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'));
+  const omegaBody = new Vector3(state.angularVelocity.x, state.angularVelocity.y, state.angularVelocity.z); // world-frame
 
   // ── Conservation reference: capture H_total before panel updates ──────────
   // Following Hughes (1986) Ch. 3 and Wie (2008) §8.2:
@@ -526,7 +425,7 @@ export function stepSimulation(
   const H0 = computeTotalAngularMomentum(state, config, params);
 
   // ── Phase 1: per-panel hinge dynamics & accumulate body torque ─────────────
-  const bodyTorqueWorld: Vector3 = { x: 0, y: 0, z: 0 };
+  const bodyTorqueWorld = new Vector3(0, 0, 0);
 
   interface PanelUpdate {
     thetaNew: number;
@@ -549,16 +448,16 @@ export function stepSimulation(
       updates.push({
         thetaNew: panel.angle, omegaRelNew: 0, deployedNew: panel.deployed,
         contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
-        aBody: v3(0, 0, 0), aLocal: v3(0, 0, 0), qMount: qIdentity(),
+        aBody: new Vector3(0, 0, 0), aLocal: new Vector3(0, 0, 0), qMount: new Quaternion(),
       });
       continue;
     }
 
     // Once deployed, hold panel at stop angle — no further hinge dynamics needed
     if (panel.deployed) {
-      const qMountD = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
+      const qMountD = new Quaternion().setFromEuler(new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'));
       const aLocalD = hingeAxisUnit(spec.axis);
-      const aBodyD = qRotateVec(qMountD, aLocalD);
+      const aBodyD = aLocalD.clone().applyQuaternion(qMountD.clone());
       updates.push({
         thetaNew: panel.angle, omegaRelNew: 0, deployedNew: true,
         contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
@@ -568,17 +467,17 @@ export function stepSimulation(
     }
 
     // Mounting rotation from spec.rot (transforms local panel frame → body frame)
-    const qMount = qFromEuler({ x: spec.rot[0], y: spec.rot[1], z: spec.rot[2] });
+    const qMount = new Quaternion().setFromEuler(new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'));
     const aLocal = hingeAxisUnit(spec.axis);        // hinge axis in local frame
-    const aBody = qRotateVec(qMount, aLocal);       // physical hinge axis in body frame
-    const aWorld = qRotateVec(qBody, aBody);         // physical hinge axis in world frame
+    const aBody = aLocal.clone().applyQuaternion(qMount.clone());       // physical hinge axis in body frame
+    const aWorld = aBody.clone().applyQuaternion(qBody.clone());         // physical hinge axis in world frame
 
     // Panel inertia tensor (diagonal, panel body frame about hinge edge)
     const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
 
     // Panel orientation:  q_panel = q_body ⊗ q_mount ⊗ q_hinge_local(θ)
-    const qHingeLocal = qFromAxisAngle(aLocal, panel.angle);
-    const qPanel = qNormalize(qMultiply(qMultiply(qBody, qMount), qHingeLocal));
+    const qHingeLocal = new Quaternion().setFromAxisAngle(aLocal.clone().normalize(), panel.angle);
+    const qPanel = qBody.clone().multiply(qMount.clone()).multiply(qHingeLocal).normalize();
 
     const theta = panel.angle;
     const omegaRel = panel.angularVelocity;
@@ -648,7 +547,7 @@ export function stepSimulation(
 
       // Effective hinge-axis inertia via full tensor:  I_eff = 1 / (â · I⁻¹ · â)
       const alphaUnit = applyInverseInertia(Ip, qPanel, aWorld);
-      const Ieff = 1 / v3Dot(alphaUnit, aWorld);
+      const Ieff = 1 / alphaUnit.dot(aWorld);
 
       // Equivalent torque τ = I_eff · θ̈  (reaction couples to body)
       thetaDDot = (omegaRelNew - omegaRel) / dt;
@@ -694,11 +593,11 @@ export function stepSimulation(
       contactForceNew = Math.abs(tContact);
 
       // Full 3D panel angular acceleration:  α_panel = I_panel_world⁻¹ · (τ · â_world)
-      const tauVecWorld = v3Scale(aWorld, tau);
+      const tauVecWorld = aWorld.clone().multiplyScalar(tau);
       const alphaPanelWorld = applyInverseInertia(Ip, qPanel, tauVecWorld);
 
       // Project onto hinge axis for 1-DOF constraint:  θ̈ = α_panel · â
-      thetaDDot = v3Dot(alphaPanelWorld, aWorld);
+      thetaDDot = alphaPanelWorld.dot(aWorld);
 
       // Semi-implicit Euler (velocity first)
       omegaRelNew = omegaRel + thetaDDot * dt;
@@ -712,7 +611,7 @@ export function stepSimulation(
     updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, thetaDDot, aBody, aLocal, qMount });
 
     // Accumulate equal-and-opposite reaction on body:  τ_body += −τ · â_world
-    const aWorld2 = qRotateVec(qBody, aBody);
+    const aWorld2 = aBody.clone().applyQuaternion(qBody.clone());
     bodyTorqueWorld.x -= hingeTorque * aWorld2.x;
     bodyTorqueWorld.y -= hingeTorque * aWorld2.y;
     bodyTorqueWorld.z -= hingeTorque * aWorld2.z;
@@ -742,7 +641,7 @@ export function stepSimulation(
   // Then apply angular-momentum conservation correction as per Hughes (1986) Ch. 3.
 
   // Compute gravity gradient torque and add to body torque
-  const totalBodyTorqueWorld: Vector3 = { ...bodyTorqueWorld };
+  const totalBodyTorqueWorld = bodyTorqueWorld.clone();
   if (params.gravityGradientEnabled !== false) {
     const altM = params.orbitAltitudeM ?? 400_000;
     const ggTorque = computeGravityGradientTorque(Ib, qBody, state.time, altM);
@@ -761,12 +660,12 @@ export function stepSimulation(
   // We need to iterate to solve: ω_body = I_body⁻¹ · (H₀ − H_panels(ω_body))
   // Start with RK4 prediction and iterate 3 times for convergence.
 
-  let omegaBodyIter = { ...omegaBodyRK4 };
+  let omegaBodyIter = omegaBodyRK4.clone();
   const MAX_ITERS = 5;
 
   for (let iter = 0; iter < MAX_ITERS; iter++) {
     // Compute panel angular momentum contribution using current body velocity estimate
-    let H_panels: Vector3 = { x: 0, y: 0, z: 0 };
+    const H_panels = new Vector3(0, 0, 0);
 
     for (let i = 0; i < state.panels.length; i++) {
       const panel = state.panels[i];
@@ -780,19 +679,19 @@ export function stepSimulation(
 
       // Panel orientation using RK4-predicted body orientation:
       // q_panel = q_body_RK4 ⊗ q_mount ⊗ q_hinge_local(θ_new)
-      const qHingeNew = qFromAxisAngle(up.aLocal, up.thetaNew);
-      const qPanelNew = qNormalize(qMultiply(qMultiply(qBodyRK4, up.qMount), qHingeNew));
+      const qHingeNew = new Quaternion().setFromAxisAngle(up.aLocal.clone().normalize(), up.thetaNew);
+      const qPanelNew = qBodyRK4.clone().multiply(up.qMount.clone()).multiply(qHingeNew).normalize();
 
       // Hinge axis in world frame (using RK4-predicted body orientation)
-      const aWorldNew = qRotateVec(qBodyRK4, up.aBody);
+      const aWorldNew = up.aBody.clone().applyQuaternion(qBodyRK4.clone());
 
       // Panel angular velocity: ω_panel = ω_body_iter + θ̇_new · â_world
-      const omegaPanelNew = v3Add(omegaBodyIter, v3Scale(aWorldNew, up.omegaRelNew));
+      const omegaPanelNew = omegaBodyIter.clone().add(aWorldNew.clone().multiplyScalar(up.omegaRelNew));
 
       // Rotate ω to panel body frame, apply diagonal inertia, rotate back
-      const omegaPanelLocal = qRotateVec(qConjugate(qPanelNew), omegaPanelNew);
+      const omegaPanelLocal = omegaPanelNew.clone().applyQuaternion(qPanelNew.clone().conjugate());
       const HpanelLocal = applyInertia(Ip, omegaPanelLocal);
-      const HpanelWorld = qRotateVec(qPanelNew, HpanelLocal);
+      const HpanelWorld = HpanelLocal.clone().applyQuaternion(qPanelNew.clone());
 
       H_panels.x += HpanelWorld.x;
       H_panels.y += HpanelWorld.y;
@@ -802,27 +701,19 @@ export function stepSimulation(
     // Enforce conservation — derive body angular velocity
     // H_body = H_total_initial - H_panels  (for free-float, H_total is conserved)
     // ω_body_conserved = R_body · I_body_diag^{-1} · R_body^T · H_body
-    const H_body_required: Vector3 = {
-      x: H0.x - H_panels.x,
-      y: H0.y - H_panels.y,
-      z: H0.z - H_panels.z,
-    };
+    const H_body_required = new Vector3(H0.x - H_panels.x, H0.y - H_panels.y, H0.z - H_panels.z);
 
     // Transform H_body to body frame, divide by principal inertia, transform back
-    const H_body_local = qRotateVec(qConjugate(qBodyRK4), H_body_required);
-    const omegaConserved: Vector3 = {
-      x: H_body_local.x / Ib.x,
-      y: H_body_local.y / Ib.y,
-      z: H_body_local.z / Ib.z,
-    };
-    omegaBodyIter = qRotateVec(qBodyRK4, omegaConserved);
+    const H_body_local = H_body_required.clone().applyQuaternion(qBodyRK4.clone().conjugate());
+    const omegaConserved = new Vector3(H_body_local.x / Ib.x, H_body_local.y / Ib.y, H_body_local.z / Ib.z);
+    omegaBodyIter = omegaConserved.clone().applyQuaternion(qBodyRK4.clone());
   }
 
   const omegaConservedWorld = omegaBodyIter;
 
   // Step 2d: Cross-check RK4 vs conservation — warn if discrepancy > 1%
   const H0mag = Math.sqrt(H0.x * H0.x + H0.y * H0.y + H0.z * H0.z);
-  const deltaOmega = v3Sub(omegaConservedWorld, omegaBodyRK4);
+  const deltaOmega = omegaConservedWorld.clone().sub(omegaBodyRK4);
   const deltaOmegaMag = Math.sqrt(deltaOmega.x * deltaOmega.x + deltaOmega.y * deltaOmega.y + deltaOmega.z * deltaOmega.z);
   const omegaRK4Mag = Math.sqrt(omegaBodyRK4.x * omegaBodyRK4.x + omegaBodyRK4.y * omegaBodyRK4.y + omegaBodyRK4.z * omegaBodyRK4.z);
   const relativeError = omegaRK4Mag > 1e-12 ? deltaOmegaMag / omegaRK4Mag : (H0mag > 1e-12 ? deltaOmegaMag : 0);
@@ -854,31 +745,27 @@ export function stepSimulation(
     // Blend: 90% RK4 (captures external torque) + 10% conservation correction
     const blendFactor = 0.1;
     qBodyNew = qBodyRK4;
-    omegaBodyNew = {
-      x: omegaBodyRK4.x + blendFactor * deltaOmega.x,
-      y: omegaBodyRK4.y + blendFactor * deltaOmega.y,
-      z: omegaBodyRK4.z + blendFactor * deltaOmega.z,
-    };
+    omegaBodyNew = omegaBodyRK4.clone().add(deltaOmega.clone().multiplyScalar(blendFactor));
   }
 
   // Approximate angular acceleration from finite difference (for telemetry)
-  const alphaWorld: Vector3 = v3Scale(v3Sub(omegaBodyNew, omegaBody), 1 / dt);
+  const alphaWorld = omegaBodyNew.clone().sub(omegaBody).multiplyScalar(1 / dt);
 
   // ── Phase 3: assemble new panel states with derived quaternions ────────────
   const newPanels: PanelState[] = state.panels.map((panel, i) => {
     const up = updates[i];
 
     if (panel.stuck) {
-      return { ...panel, _q: panel._q ?? qIdentity(), _omega: panel._omega ?? v3(0, 0, 0) };
+      return { ...panel, _q: panel._q ?? new Quaternion(), _omega: panel._omega ?? new Vector3(0, 0, 0) };
     }
 
     // Derive panel quaternion:  q_panel = q_body ⊗ q_mount ⊗ q_hinge_local(θ)
-    const qHingeNew = qFromAxisAngle(up.aLocal, up.thetaNew);
-    const qPanelNew = qNormalize(qMultiply(qMultiply(qBodyNew, up.qMount), qHingeNew));
+    const qHingeNew = new Quaternion().setFromAxisAngle(up.aLocal.clone().normalize(), up.thetaNew);
+    const qPanelNew = qBodyNew.clone().multiply(up.qMount.clone()).multiply(qHingeNew).normalize();
 
     // Panel world-frame angular velocity:  ω_panel = ω_body + θ̇ · â_world(new)
-    const aWorldNew = qRotateVec(qBodyNew, up.aBody);
-    const omegaPanelNew = v3Add(omegaBodyNew, v3Scale(aWorldNew, up.omegaRelNew));
+    const aWorldNew = up.aBody.clone().applyQuaternion(qBodyNew.clone());
+    const omegaPanelNew = omegaBodyNew.clone().add(aWorldNew.clone().multiplyScalar(up.omegaRelNew));
 
     // Get tip deflection from flex state (if enabled)
     const tipDeflectionDeg = newFlexState?.[i]?.tipDeflectionDeg;
@@ -896,7 +783,8 @@ export function stepSimulation(
   });
 
   // ── Map to legacy state ────────────────────────────────────────────────────
-  const euler = qToEuler(qBodyNew);
+  const e = new Euler().setFromQuaternion(qBodyNew.clone(), 'XYZ');
+  const euler = new Vector3(e.x, e.y, e.z);
   const allDeployed = newPanels.every(p => p.deployed || p.stuck);
 
   return {
@@ -966,7 +854,9 @@ export function runFullSimulation(
   const H0mag = Math.sqrt(H0.x * H0.x + H0.y * H0.y + H0.z * H0.z);
 
   // ── Attitude coupling tracking (cumulative rotation from t=0) ──────────
-  const q0 = state._bodyQ ? { ...state._bodyQ } : qIdentity();
+  const q0 = state._bodyQ
+    ? new Quaternion(state._bodyQ.x, state._bodyQ.y, state._bodyQ.z, state._bodyQ.w)
+    : new Quaternion();
 
   for (let i = 0; i < maxSteps; i++) {
     state = stepSimulation(state, config, params);
@@ -996,15 +886,15 @@ export function runFullSimulation(
     if (i % 3 === 0) {
       // Compute attitude coupling: rotation angle from initial to current orientation
       // q_rel = q_current ⊗ q_0* → extract angle: θ = 2·acos(|w|)
-      const qCur = state._bodyQ ?? qIdentity();
-      const qRel = qMultiply(qCur, qConjugate(q0));
-      const attitudeCouplingRad = 2 * Math.acos(Math.min(1, Math.abs(qRel.w)));
-      const attitudeCouplingDeg = (attitudeCouplingRad * 180) / Math.PI;
+      const qCur = state._bodyQ ?? new Quaternion();
+      const qRel = qCur.clone().multiply(q0.clone().conjugate());
+      const attitudeCouplingRad = 2 * Math.acos(MathUtils.clamp(Math.abs(qRel.w), -1, 1));
+      const attitudeCouplingDeg = MathUtils.radToDeg(attitudeCouplingRad);
 
       frames.push({
         time: Math.round(state.time * 1000) / 1000,
-        angularVelocity: { ...state.angularVelocity },
-        angularAcceleration: { ...state.angularAcceleration },
+        angularVelocity: state.angularVelocity.clone(),
+        angularAcceleration: state.angularAcceleration.clone(),
         panelAngles: state.panels.map(p => p.angle),
         contactForces: state.panels.map(p => p.contactForce),
         totalContactForce: state.panels.reduce((s, p) => s + p.contactForce, 0),
@@ -1016,7 +906,7 @@ export function runFullSimulation(
               const altM = params.orbitAltitudeM ?? 400_000;
               const gg = computeGravityGradientTorque(
                 bodyInertiaDiag(params),
-                state._bodyQ ?? qIdentity(),
+                state._bodyQ ?? new Quaternion(),
                 state.time,
                 altM,
               );

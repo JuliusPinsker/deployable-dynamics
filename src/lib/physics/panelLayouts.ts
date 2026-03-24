@@ -1,4 +1,5 @@
 import type { ConfigType, SimulationParams } from './types';
+import { MathUtils } from 'three';
 
 // Panel spec in world coordinate system (meters)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -107,7 +108,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           size: [L, T, W],
           hinge: [0, -hy, hz],             // hinge at top edge of -Y face
           pos: [0, 0, -W / 2],             // same offset
-          rot: [0, 0, Math.PI],            // flip X,Y: solar faces -Y, black faces +Y (toward body), aBody = -X
+          rot: [0, 0, MathUtils.degToRad(180)], // flip X,Y: solar faces -Y, black faces +Y (toward body), aBody = -X
           axis: 'x',                       // +θ about local X = -θ about world X
         },
       ];
@@ -127,17 +128,17 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           rot: [0, 0, 0],                  // no rotation: solar faces +Y, black faces -Y (toward body)
           axis: 'x',                       // rotation about +X axis
           stage: 1,                        // primary deployment stage
-          maxAngle: Math.PI / 2,           // 90° deployment
+          maxAngle: MathUtils.degToRad(90), // 90° deployment
         },
         {
           id: 'DLE_Stage1_NegY',
           size: [L, T, W],
           hinge: [0, -hy, hz],             // hinge at top edge of -Y face
           pos: [0, 0, -W / 2],             // same offset
-          rot: [0, 0, Math.PI],            // flip X,Y: solar faces -Y, black faces +Y (toward body), aBody = -X
+          rot: [0, 0, MathUtils.degToRad(180)], // flip X,Y: solar faces -Y, black faces +Y (toward body), aBody = -X
           axis: 'x',                       // +θ about local X = -θ about world X
           stage: 1,
-          maxAngle: Math.PI / 2,
+          maxAngle: MathUtils.degToRad(90),
         },
       ];
 
@@ -188,7 +189,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           hingeOffset: [0, 0, -W],
           // ── Sequential deployment ──
           stage: 2,                        // secondary deployment stage (waits for stage 1)
-          maxAngle: Math.PI,               // 180° deployment
+          maxAngle: MathUtils.degToRad(180), // 180° deployment
         },
         {
           id: 'DLE_Stage2_NegY',
@@ -204,7 +205,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           parentIndex: 1,
           hingeOffset: [0, 0, -W],
           stage: 2,
-          maxAngle: Math.PI,
+          maxAngle: MathUtils.degToRad(180),
         },
       ];
 
@@ -220,7 +221,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           size: [SE_LEN, T, SE_SPAN],
           hinge: [0, hy, hz],              // top face, +Y edge
           pos: [0, 0, SE_SPAN / 2],        // stowed inward from +Y edge toward center
-          rot: [Math.PI / 2, 0, Math.PI],  // flat on +Z; Z-flip preserves outward deployment sense
+          rot: [MathUtils.degToRad(90), 0, MathUtils.degToRad(180)], // flat on +Z; Z-flip preserves outward deployment sense
           axis: 'x',
         },
         {
@@ -228,7 +229,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           size: [SE_LEN, T, SE_SPAN],
           hinge: [0, -hy, hz],             // top face, -Y edge
           pos: [0, 0, -SE_SPAN / 2],       // stowed inward from -Y edge toward center
-          rot: [Math.PI / 2, 0, 0],        // flat on +Z face (panel normal +Z)
+          rot: [MathUtils.degToRad(90), 0, 0], // flat on +Z face (panel normal +Z)
           axis: 'x',
         },
         {
@@ -236,7 +237,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           size: [SE_LEN, T, SE_SPAN],
           hinge: [0, hy, -hz],             // bottom face, +Y edge
           pos: [0, 0, -SE_SPAN / 2],       // stowed inward from +Y edge toward center
-          rot: [-Math.PI / 2, 0, 0],       // flat on -Z face (panel normal -Z)
+          rot: [MathUtils.degToRad(-90), 0, 0], // flat on -Z face (panel normal -Z)
           axis: 'x',
         },
         {
@@ -244,7 +245,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
           size: [SE_LEN, T, SE_SPAN],
           hinge: [0, -hy, -hz],            // bottom face, -Y edge
           pos: [0, 0, SE_SPAN / 2],        // stowed inward from -Y edge toward center
-          rot: [-Math.PI / 2, 0, Math.PI], // flat on -Z; Z-flip preserves outward deployment sense
+          rot: [MathUtils.degToRad(-90), 0, MathUtils.degToRad(180)], // flat on -Z; Z-flip preserves outward deployment sense
           axis: 'x',
         },
       ];
@@ -263,7 +264,7 @@ export function getPanelSpecs(config: ConfigType, params: SimulationParams): Pan
         ...spec,
         id: `CPL_SE_${idx + 1}`,
         stage: 3 as const,
-        maxAngle: Math.PI / 2,
+        maxAngle: MathUtils.degToRad(90),
       }));
 
       return [...longEdgeChain, ...shortEdgePanels];
