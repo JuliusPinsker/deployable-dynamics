@@ -33,8 +33,13 @@ import {
   DEFAULT_FLEX_PARAMS,
 } from './flexModel';
 import * as THREE from 'three';
-import { Solver } from 'odex';
-import { GM_EARTH, R_EARTH_M } from './constants';
+import { GM_EARTH, R_EARTH as R_EARTH_M } from './orbitalTorques';
+
+function isSimDebugEnabled(): boolean {
+  if (typeof globalThis === 'undefined') return false;
+  const g = globalThis as { __SIM_DEBUG__?: boolean };
+  return g.__SIM_DEBUG__ === true;
+}
 
 function vec3(x: number, y: number, z: number): THREE.Vector3 {
   return new THREE.Vector3(x, y, z);
@@ -266,42 +271,49 @@ export function integrateBodyRK4(
   // State vector: [qw, qx, qy, qz, wx, wy, wz]
   const y0 = [qIn.w, qIn.x, qIn.y, qIn.z, omegaIn.x, omegaIn.y, omegaIn.z];
 
-  const solver = new Solver(
-    (_t, y) => {
-      const [qw, qx, qy, qz, wx, wy, wz] = y;
-      const q = new THREE.Quaternion(qx, qy, qz, qw).normalize();
-      const omega = new THREE.Vector3(wx, wy, wz);
+  const deriv = (y: number[]): number[] => {
+    const [qw, qx, qy, qz, wx, wy, wz] = y;
+    const q = new THREE.Quaternion(qx, qy, qz, qw).normalize();
+    const omega = new THREE.Vector3(wx, wy, wz);
 
-      // dq/dt = 0.5 * [0, omega_world] ⊗ q
-      const omegaQ = new THREE.Quaternion(omega.x, omega.y, omega.z, 0);
-      const qDot = omegaQ.clone().multiply(q);
-      const dqw = 0.5 * qDot.w;
-      const dqx = 0.5 * qDot.x;
-      const dqy = 0.5 * qDot.y;
-      const dqz = 0.5 * qDot.z;
+    // dq/dt = 0.5 * [0, omega_world] ⊗ q
+    const omegaQ = new THREE.Quaternion(omega.x, omega.y, omega.z, 0);
+    const qDot = omegaQ.clone().multiply(q);
+    const dqw = 0.5 * qDot.w;
+    const dqx = 0.5 * qDot.x;
+    const dqy = 0.5 * qDot.y;
+    const dqz = 0.5 * qDot.z;
 
-      // Euler's equation: dω/dt = I⁻¹(τ - ω×(Iω))
-      const omegaBodyLocal = omega.clone().applyQuaternion(q.clone().conjugate());
-      const Iomega = new THREE.Vector3(inertiaIn.x * omegaBodyLocal.x, inertiaIn.y * omegaBodyLocal.y, inertiaIn.z * omegaBodyLocal.z);
-      const IomegaWorld = Iomega.applyQuaternion(q);
-      const gyro = new THREE.Vector3().crossVectors(omega, IomegaWorld);
-      const netTau = torqueIn.clone().sub(gyro);
-      const tBody2 = netTau.clone().applyQuaternion(q.clone().conjugate());
-      const aBody2 = new THREE.Vector3(tBody2.x / inertiaIn.x, tBody2.y / inertiaIn.y, tBody2.z / inertiaIn.z);
-      const dOmega = aBody2.applyQuaternion(q);
+    // Euler's equation: dω/dt = I⁻¹(τ - ω×(Iω))
+    const omegaBodyLocal = omega.clone().applyQuaternion(q.clone().conjugate());
+    const Iomega = new THREE.Vector3(
+      inertiaIn.x * omegaBodyLocal.x,
+      inertiaIn.y * omegaBodyLocal.y,
+      inertiaIn.z * omegaBodyLocal.z,
+    );
+    const IomegaWorld = Iomega.applyQuaternion(q);
+    const gyro = new THREE.Vector3().crossVectors(omega, IomegaWorld);
+    const netTau = torqueIn.clone().sub(gyro);
+    const tBody2 = netTau.clone().applyQuaternion(q.clone().conjugate());
+    const aBody2 = new THREE.Vector3(
+      tBody2.x / inertiaIn.x,
+      tBody2.y / inertiaIn.y,
+      tBody2.z / inertiaIn.z,
+    );
+    const dOmega = aBody2.applyQuaternion(q);
 
-      return [dqw, dqx, dqy, dqz, dOmega.x, dOmega.y, dOmega.z];
-    },
-    7,
-    {
-      absoluteTolerance: 1e-8,
-      relativeTolerance: 1e-8,
-    },
-  );
+    return [dqw, dqx, dqy, dqz, dOmega.x, dOmega.y, dOmega.z];
+  };
 
-  let yFinal = [...y0];
+  const k1 = deriv(y0);
+  const yk2 = y0.map((v, i) => v + 0.5 * dt * k1[i]);
+  const k2 = deriv(yk2);
+  const yk3 = y0.map((v, i) => v + 0.5 * dt * k2[i]);
+  const k3 = deriv(yk3);
+  const yk4 = y0.map((v, i) => v + dt * k3[i]);
+  const k4 = deriv(yk4);
 
-  solver.solve(0, y0, dt, solver.grid(dt, (_t, y) => { yFinal = [...y]; }));
+  const yFinal = y0.map((v, i) => v + (dt / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
 
   const [qw, qx, qy, qz, wx, wy, wz] = yFinal;
   return {
@@ -773,7 +785,7 @@ export function stepSimulation(
   const omegaRK4Mag = Math.sqrt(omegaBodyRK4.x * omegaBodyRK4.x + omegaBodyRK4.y * omegaBodyRK4.y + omegaBodyRK4.z * omegaBodyRK4.z);
   const relativeError = omegaRK4Mag > 1e-12 ? deltaOmegaMag / omegaRK4Mag : (H0mag > 1e-12 ? deltaOmegaMag : 0);
 
-  if (relativeError > 0.01 && H0mag > 1e-9) {
+  if (relativeError > 0.01 && H0mag > 1e-9 && isSimDebugEnabled()) {
     // Log at debug level — this can happen during high-dynamics phases
     if (typeof console !== 'undefined' && console.debug) {
       console.debug(
@@ -930,7 +942,7 @@ export function runFullSimulation(
       momentumError = H0mag > 1e-12 ? dHmag / H0mag : dHmag;
 
       // Warn on > 5% violation (only on the 60-frame check cadence)
-      if (i % 60 === 59 && momentumError > 0.05) {
+      if (i % 60 === 59 && momentumError > 0.05 && isSimDebugEnabled()) {
         console.warn(
           `[momentum] t=${state.time.toFixed(3)}s: angular momentum error ` +
           `${(momentumError * 100).toFixed(2)}% exceeds 5% threshold`,

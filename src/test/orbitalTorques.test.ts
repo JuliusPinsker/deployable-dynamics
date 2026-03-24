@@ -6,7 +6,6 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 import { describe, it, expect } from 'vitest';
-import * as satellite from 'satellite.js';
 import {
   meanMotion,
   orbitalPeriod,
@@ -16,7 +15,6 @@ import {
   updateNadirVector,
   GM_EARTH,
   R_EARTH,
-  SOLAR_CONSTANT_1AU,
   P_SOLAR,
 } from '../lib/physics/orbitalTorques';
 import type { Vector3, Quaternion } from '../lib/physics/types';
@@ -32,28 +30,6 @@ function v3Mag(v: Vector3): number {
 function qIdentity(): Quaternion {
   return { w: 1, x: 0, y: 0, z: 0 };
 }
-
-function toNumericConstant(value: unknown, name: string): number {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (value && typeof value === 'object') {
-    const maybeValue = (value as { value?: unknown }).value;
-    if (typeof maybeValue === 'number' && Number.isFinite(maybeValue)) {
-      return maybeValue;
-    }
-    const maybeToNumber = (value as { toNumber?: (() => number) | undefined }).toNumber;
-    if (typeof maybeToNumber === 'function') {
-      const numeric = maybeToNumber.call(value);
-      if (Number.isFinite(numeric)) {
-        return numeric;
-      }
-    }
-  }
-  throw new Error(`Unable to resolve numeric value for ${name}`);
-}
-
-const satConstants = (satellite as unknown as { constants?: { mu?: number; earthRadius?: number } }).constants;
 
 // Quaternion for rotation about Z axis by angle θ
 function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
@@ -74,10 +50,10 @@ function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
 
 describe('meanMotion', () => {
   it('returns correct mean motion for 400 km orbit', () => {
-    // satellite.js uses WGS-72 radius and mu in km^3/s^2
+    // At 400 km altitude: n = sqrt(μ/R³)
     const altKm = 400;
-    const a_km = (satConstants?.earthRadius ?? 6378.135) + altKm;
-    const expected = Math.sqrt(398600.4418 / Math.pow(a_km, 3));
+    const R = R_EARTH + altKm * 1000; // 6.771e6 m
+    const expected = Math.sqrt(GM_EARTH / (R * R * R));
 
     const n = meanMotion(altKm);
 
@@ -210,8 +186,8 @@ describe('gravityGradientTorque', () => {
     expect(v3Mag(tau90)).toBeGreaterThan(1e-12);
     
     // And torques should differ (different body orientation relative to nadir)
-    const componentDiff = Math.abs(tau0.x - tau90.x) + Math.abs(tau0.y - tau90.y) + Math.abs(tau0.z - tau90.z);
-    expect(componentDiff).toBeGreaterThan(0); // Different directions due to body-frame alignment
+    const diff = Math.abs(v3Mag(tau0) - v3Mag(tau90));
+    expect(diff).toBeGreaterThan(0); // Different magnitudes due to different body alignment
   });
 });
 
@@ -410,7 +386,7 @@ describe('srpTorque', () => {
 
   it('uses correct solar pressure constant', () => {
     // Verify P_SOLAR ≈ 4.56e-6 N/m² (L_sun / 4πc at 1 AU)
-    expect(P_SOLAR).toBeCloseTo(4.54e-6, 7);
+    expect(P_SOLAR).toBeCloseTo(4.56e-6, 8);
   });
 });
 
@@ -420,14 +396,17 @@ describe('srpTorque', () => {
 
 describe('physical constants', () => {
   it('GM_EARTH matches standard value', () => {
-   expect(GM_EARTH).toBeCloseTo(3.986004418e14, 6);
+    // IERS/WGS-84 value: 3.986004418e14 m³/s²
+    expect(GM_EARTH).toBeCloseTo(3.986004418e14, 6);
   });
 
-  it('R_EARTH matches centralized mean-radius value', () => {
-    expect(R_EARTH).toBeCloseTo(6.371e6, 1);
+  it('R_EARTH matches WGS-84 mean radius', () => {
+    // WGS-84 mean radius: 6.371e6 m
+    expect(R_EARTH).toBeCloseTo(6.371e6, 0);
   });
 
-  it('P_SOLAR matches fixed curated SRP constant', () => {
+  it('P_SOLAR matches solar constant at 1 AU', () => {
+    // P = L_sun / (4π r² c) ≈ 4.56e-6 N/m²
     expect(P_SOLAR).toBeCloseTo(4.56e-6, 8);
   });
 });

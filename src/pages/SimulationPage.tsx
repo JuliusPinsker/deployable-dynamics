@@ -11,7 +11,6 @@ import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, 
 import { createInitialState, stepSimulation } from '@/lib/physics/engine';
 import { type ThermalParams, DEFAULT_THERMAL_PARAMS } from '@/lib/physics/thermalModel';
 import { type FlexParams, DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
-import { GM_EARTH, R_EARTH } from '@/lib/physics/orbitalTorques';
 import { Play, RotateCcw, Pause } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
@@ -83,12 +82,14 @@ export default function SimulationPage() {
 
       // Compute GG torque for telemetry display (only when toggle is on)
       if (currentParams.gravityGradientEnabled) {
+        const MU = 3.986004418e14;
+        const R_EARTH = 6.371e6;
         const altM = currentParams.orbitAltitudeM ?? 400_000;
         const R = R_EARTH + altM;
         const Ixx = (1/12) * currentParams.bodyMass * (currentParams.bodyHeight**2 + currentParams.bodyDepth**2);
         const Iyy = (1/12) * currentParams.bodyMass * (currentParams.bodyWidth**2 + currentParams.bodyDepth**2);
         const Izz = (1/12) * currentParams.bodyMass * (currentParams.bodyWidth**2 + currentParams.bodyHeight**2);
-        const factor = (3 * GM_EARTH) / (R**3);
+        const factor = (3 * MU) / (R**3);
         const maxGG = factor * Math.max(
           Math.abs(Izz - Iyy),
           Math.abs(Ixx - Izz),
@@ -346,6 +347,96 @@ export default function SimulationPage() {
             </CardContent>
           </Card>
 
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center justify-between">
+                <span>Thermal Environment</span>
+                <Switch
+                  checked={thermalEnabled}
+                  onCheckedChange={(v) => {
+                    setThermalEnabled(v);
+                    cancelAnimationFrame(rafRef.current);
+                    setState(createInitialState(config, v ? thermalParams : undefined));
+                  }}
+                />
+              </CardTitle>
+            </CardHeader>
+            {thermalEnabled && (
+              <CardContent className="space-y-4">
+                {/* Temperature readout */}
+                <div className="rounded-md bg-secondary/50 p-3 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Spring Temp</span>
+                    <span className="font-mono font-medium">
+                      {state.thermalState
+                        ? `${state.thermalState.currentTemperatureDeg.toFixed(1)}°C`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Stiffness</span>
+                    <span className={`font-mono font-medium ${
+                      !state.thermalState
+                        ? ''
+                        : state.thermalState.stiffnessMultiplier < 0.97
+                        ? 'text-yellow-500'
+                        : state.thermalState.stiffnessMultiplier > 1.03
+                        ? 'text-blue-400'
+                        : 'text-green-500'
+                    }`}>
+                      {state.thermalState
+                        ? `${(state.thermalState.stiffnessMultiplier * 100).toFixed(2)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Orbit Phase</span>
+                    <span className="font-mono">
+                      {state.thermalState
+                        ? `${((state.thermalState.orbitPhaseRad / (2 * Math.PI)) * 100).toFixed(1)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Status</span>
+                    <span className={
+                      state.thermalState?.isEclipse
+                        ? 'text-blue-400 font-medium'
+                        : 'text-yellow-400 font-medium'
+                    }>
+                      {state.thermalState
+                        ? (state.thermalState.isEclipse ? '🌑 Eclipse' : '☀️ Sunlit')
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Orbit altitude slider */}
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">
+                    Orbit Altitude: {thermalParams.orbitAltitudeKm} km
+                  </Label>
+                  <Slider
+                    value={[thermalParams.orbitAltitudeKm]}
+                    onValueChange={([v]) => setThermalParams(p => ({ ...p, orbitAltitudeKm: v }))}
+                    min={200}
+                    max={800}
+                    step={50}
+                  />
+                </div>
+
+                {/* Temperature range display */}
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <div>Eclipse: {thermalParams.eclipseTemperatureDeg}°C</div>
+                  <div>Sunlight: {thermalParams.sunlightTemperatureDeg}°C</div>
+                  <div className="pt-1 border-t border-border text-[10px] text-muted-foreground/60">
+                    Orbit time ×600 accelerated for display.
+                    Physics equations unchanged.
+                  </div>
+                </div>
+              </CardContent>
+            )}
+          </Card>
         </div>
       </div>
     </div>

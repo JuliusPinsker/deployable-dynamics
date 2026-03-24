@@ -1,10 +1,4 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-import * as satellite from 'satellite.js';
-import { ALPHA_E } from './constants';
-
-const SAT_CONSTANTS = (satellite as unknown as { constants?: { earthRadius?: number } }).constants;
-const EARTH_RADIUS_KM = SAT_CONSTANTS?.earthRadius ?? 6378.135;
 //  Temperature-Dependent Torsional Spring Stiffness Model for LEO CubeSat
 //
 //  Models the thermal environment of a Low Earth Orbit satellite and its
@@ -27,6 +21,20 @@ const EARTH_RADIUS_KM = SAT_CONSTANTS?.earthRadius ?? 6378.135;
 // ─────────────────────────────────────────────────────────────────────────────
 //  Constants
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Mean Earth radius (km). */
+const R_E_KM = 6371;
+
+/** Standard gravitational parameter for Earth (km³/s²). */
+const MU_KM3_S2 = 398600.4418;
+
+/**
+ * Temperature coefficient of elastic modulus for spring steel (K⁻¹).
+ *
+ * Source: ESA ECSS-E-HB-32-20A (2011), Table 4.3.
+ * E(T) = E₀ · (1 - αE · (T - T_ref))
+ */
+const ALPHA_E = 3.0e-4;
 
 /**
  * Time acceleration factor for thermal simulation.
@@ -110,9 +118,8 @@ export const DEFAULT_THERMAL_PARAMS: ThermalParams = {
  * @returns           Orbital period (seconds)
  */
 export function computeOrbitPeriodS(altitudeKm: number): number {
-  const a_km = EARTH_RADIUS_KM + altitudeKm;
-  const mu_km3 = 398600.4418;
-  return 2 * Math.PI * Math.sqrt(Math.pow(a_km, 3) / mu_km3);
+  const a = R_E_KM + altitudeKm; // semi-major axis (km)
+  return 2 * Math.PI * Math.sqrt(Math.pow(a, 3) / MU_KM3_S2);
 }
 
 /**
@@ -146,8 +153,8 @@ export function computeEclipseFraction(
   const cosBeta = Math.cos(betaAngleDeg * Math.PI / 180);
 
   // Geometric argument: sin(ρ) / cos(β) where ρ = half-angle of Earth disk
-  const numerator = Math.sqrt(h * h + 2 * EARTH_RADIUS_KM * h);
-  const denominator = (EARTH_RADIUS_KM + h) * cosBeta;
+  const numerator = Math.sqrt(h * h + 2 * R_E_KM * h);
+  const denominator = (R_E_KM + h) * cosBeta;
 
   const arg = numerator / denominator;
 
