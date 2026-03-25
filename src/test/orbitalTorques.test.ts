@@ -17,7 +17,7 @@ import {
   R_EARTH,
   P_SOLAR,
 } from '../lib/physics/orbitalTorques';
-import type { Vector3, Quaternion } from '../lib/physics/types';
+import { Vector3, Quaternion } from '../lib/physics/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helper Functions
@@ -28,7 +28,7 @@ function v3Mag(v: Vector3): number {
 }
 
 function qIdentity(): Quaternion {
-  return { w: 1, x: 0, y: 0, z: 0 };
+  return new Quaternion(0, 0, 0, 1);
 }
 
 // Quaternion for rotation about Z axis by angle θ
@@ -36,12 +36,12 @@ function qFromAxisAngle(axis: Vector3, angle: number): Quaternion {
   const s = Math.sin(angle / 2);
   const c = Math.cos(angle / 2);
   const mag = v3Mag(axis);
-  return {
-    w: c,
-    x: (axis.x / mag) * s,
-    y: (axis.y / mag) * s,
-    z: (axis.z / mag) * s,
-  };
+  return new Quaternion(
+    (axis.x / mag) * s,
+    (axis.y / mag) * s,
+    (axis.z / mag) * s,
+    c,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,9 +97,9 @@ describe('gravityGradientTorque', () => {
 
   it('returns zero for symmetric body with nadir along principal axis', () => {
     // Symmetric body: I_xx = I_yy = I_zz
-    const I_symmetric: Vector3 = { x: 0.01, y: 0.01, z: 0.01 };
+    const I_symmetric = new Vector3(0.01, 0.01, 0.01);
     const qBody = qIdentity();
-    const nadirWorld: Vector3 = { x: 0, y: 0, z: -1 }; // Along -Z
+    const nadirWorld = new Vector3(0, 0, -1); // Along -Z
 
     const tau = gravityGradientTorque(qBody, I_symmetric, nadirWorld, n);
 
@@ -108,9 +108,9 @@ describe('gravityGradientTorque', () => {
 
   it('returns zero when nadir is along principal axis', () => {
     // Asymmetric body but nadir along Z axis
-    const I_asymm: Vector3 = { x: 0.01, y: 0.02, z: 0.03 };
+    const I_asymm = new Vector3(0.01, 0.02, 0.03);
     const qBody = qIdentity();
-    const nadirWorld: Vector3 = { x: 0, y: 0, z: -1 }; // Along -Z
+    const nadirWorld = new Vector3(0, 0, -1); // Along -Z
 
     const tau = gravityGradientTorque(qBody, I_asymm, nadirWorld, n);
 
@@ -120,10 +120,10 @@ describe('gravityGradientTorque', () => {
 
   it('produces torque when nadir is at 45° between principal axes', () => {
     // Nadir at 45° in Y-Z plane gives maximum torque component
-    const I_asymm: Vector3 = { x: 0.01, y: 0.02, z: 0.03 };
+    const I_asymm = new Vector3(0.01, 0.02, 0.03);
     const qBody = qIdentity();
     const sqrt2_2 = Math.sqrt(2) / 2;
-    const nadirWorld: Vector3 = { x: 0, y: -sqrt2_2, z: -sqrt2_2 };
+    const nadirWorld = new Vector3(0, -sqrt2_2, -sqrt2_2);
 
     const tau = gravityGradientTorque(qBody, I_asymm, nadirWorld, n);
 
@@ -138,16 +138,12 @@ describe('gravityGradientTorque', () => {
 
   it('matches analytical formula within 0.1%', () => {
     // Verify against Hughes (1986) Eq. 3.3.10
-    const I: Vector3 = { x: 0.010, y: 0.015, z: 0.020 }; // Typical 3U CubeSat
+    const I = new Vector3(0.010, 0.015, 0.020); // Typical 3U CubeSat
     const qBody = qIdentity();
 
     // Nadir at arbitrary angle in Y-Z plane
     const theta = 0.3; // radians
-    const nadirWorld: Vector3 = {
-      x: 0,
-      y: -Math.sin(theta),
-      z: -Math.cos(theta),
-    };
+    const nadirWorld = new Vector3(0, -Math.sin(theta), -Math.cos(theta));
 
     const tau = gravityGradientTorque(qBody, I, nadirWorld, n);
 
@@ -168,14 +164,14 @@ describe('gravityGradientTorque', () => {
   });
 
   it('transforms correctly with body rotation', () => {
-    const I: Vector3 = { x: 0.01, y: 0.02, z: 0.03 };
+    const I = new Vector3(0.01, 0.02, 0.03);
     // Use nadir at 45° in Y-Z plane (not aligned with principal axis)
     const sqrt2_2 = Math.sqrt(2) / 2;
-    const nadirWorld: Vector3 = { x: 0, y: -sqrt2_2, z: -sqrt2_2 };
+    const nadirWorld = new Vector3(0, -sqrt2_2, -sqrt2_2);
 
     // No rotation vs 90° rotation about X
     const q0 = qIdentity();
-    const q90 = qFromAxisAngle({ x: 1, y: 0, z: 0 }, Math.PI / 2);
+    const q90 = qFromAxisAngle(new Vector3(1, 0, 0), Math.PI / 2);
 
     const tau0 = gravityGradientTorque(q0, I, nadirWorld, n);
     const tau90 = gravityGradientTorque(q90, I, nadirWorld, n);
@@ -186,18 +182,18 @@ describe('gravityGradientTorque', () => {
     expect(v3Mag(tau90)).toBeGreaterThan(1e-12);
     
     // And torque vectors should differ (different body orientation relative to nadir)
-    const diffVec = {
-      x: tau0.x - tau90.x,
-      y: tau0.y - tau90.y,
-      z: tau0.z - tau90.z,
-    };
+    const diffVec = new Vector3(
+      tau0.x - tau90.x,
+      tau0.y - tau90.y,
+      tau0.z - tau90.z,
+    );
     expect(v3Mag(diffVec)).toBeGreaterThan(1e-12);
   });
 });
 
 describe('maxGravityGradientTorque', () => {
   it('returns correct maximum torque for typical CubeSat', () => {
-    const I: Vector3 = { x: 0.01, y: 0.02, z: 0.03 };
+    const I = new Vector3(0.01, 0.02, 0.03);
     const n = meanMotion(400);
 
     const tauMax = maxGravityGradientTorque(I, n);
@@ -210,7 +206,7 @@ describe('maxGravityGradientTorque', () => {
   });
 
   it('computes maximum at 45° orientation', () => {
-    const I: Vector3 = { x: 0.01, y: 0.01, z: 0.02 };
+    const I = new Vector3(0.01, 0.01, 0.02);
     const n = meanMotion(400);
 
     // When nadir is at 45° from principal axis, sin(2θ) = 1
@@ -219,7 +215,7 @@ describe('maxGravityGradientTorque', () => {
 
     // Verify by computing at 45°
     const sqrt2_2 = Math.sqrt(2) / 2;
-    const nadirWorld: Vector3 = { x: 0, y: -sqrt2_2, z: -sqrt2_2 };
+    const nadirWorld = new Vector3(0, -sqrt2_2, -sqrt2_2);
     const tau45 = gravityGradientTorque(qIdentity(), I, nadirWorld, n);
 
     // Actual torque at 45° should be close to max
@@ -240,7 +236,7 @@ describe('updateNadirVector', () => {
 
     // For inclined orbit, nadir rotates in a tilted plane
     // Start with nadir pointing -Z
-    let nadir: Vector3 = { x: 0, y: 0, z: -1 };
+    let nadir = new Vector3(0, 0, -1);
 
     // Update for 1 second
     nadir = updateNadirVector(nadir, n, dt, inclinationRad);
@@ -259,7 +255,7 @@ describe('updateNadirVector', () => {
 
     // For equatorial orbit (inc=0), orbit normal is [0, 0, 1]
     // Start with nadir in X-Y plane (perpendicular to orbit normal)
-    let nadir: Vector3 = { x: 0, y: -1, z: 0 };
+    let nadir = new Vector3(0, -1, 0);
 
     // After half orbit, nadir should have rotated 180° in X-Y plane
     nadir = updateNadirVector(nadir, n, halfPeriod, 0);
@@ -272,7 +268,7 @@ describe('updateNadirVector', () => {
   it('remains normalized over many steps', () => {
     const n = meanMotion(400);
     const dt = 0.001; // 1ms timestep
-    let nadir: Vector3 = { x: 0, y: 0, z: -1 };
+    let nadir = new Vector3(0, 0, -1);
 
     // Run for 10 seconds (10,000 steps)
     for (let i = 0; i < 10000; i++) {
@@ -288,11 +284,11 @@ describe('updateNadirVector', () => {
     const dt = 100; // Large step to see clear difference
 
     // Equatorial orbit
-    let nadir0: Vector3 = { x: 0, y: 0, z: -1 };
+    let nadir0 = new Vector3(0, 0, -1);
     nadir0 = updateNadirVector(nadir0, n, dt, 0);
 
     // 45° inclined orbit  
-    let nadir45: Vector3 = { x: 0, y: 0, z: -1 };
+    let nadir45 = new Vector3(0, 0, -1);
     nadir45 = updateNadirVector(nadir45, n, dt, Math.PI / 4);
 
     // Trajectories should differ
@@ -307,7 +303,7 @@ describe('updateNadirVector', () => {
 describe('srpTorque', () => {
   it('returns zero for stowed panels', () => {
     const qBody = qIdentity();
-    const sunWorld: Vector3 = { x: 1, y: 0, z: 0 };
+    const sunWorld = new Vector3(1, 0, 0);
 
     const specs = [
       {
@@ -340,7 +336,7 @@ describe('srpTorque', () => {
 
   it('produces torque proportional to panel area', () => {
     const qBody = qIdentity();
-    const sunWorld: Vector3 = { x: 1, y: 0, z: 0 };
+    const sunWorld = new Vector3(1, 0, 0);
 
     // Small panel
     const specsSmall = [
