@@ -19,6 +19,7 @@ import {
 } from '@/lib/physics/thermalModel';
 import { DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
 import ThemeToggle from '@/components/ui/theme-toggle';
+import { AlertTriangle } from 'lucide-react';
 
 const chartConfig: ChartConfig = {
   'long-edge': { label: 'Long-edge', color: 'hsl(210, 100%, 55%)' },
@@ -29,9 +30,20 @@ const chartConfig: ChartConfig = {
 
 const COLORS = ['hsl(210, 100%, 55%)', 'hsl(168, 70%, 45%)', 'hsl(35, 95%, 55%)', 'hsl(280, 65%, 55%)'];
 
+type AnomalyType = 'none' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck';
+type FailureAnomalyType = Exclude<AnomalyType, 'none'>;
+
+const FAILURE_SCENARIO_TEXT: Record<FailureAnomalyType, string> = {
+  'one-stuck': 'Panel Failure: 1 panel jammed at 0° — asymmetric inertia disturbance',
+  'two-opposite': 'Panel Failure: 2 opposite panels stuck — symmetric torque imbalance',
+  'two-adjacent': 'Panel Failure: 2 adjacent panels stuck — net CoM offset + torque bias',
+  'all-stuck': 'Catastrophic Failure: All panels locked — deployment aborted, CubeSat remains in tumble state',
+};
+
+
 export default function ComparePage() {
   const [stuckPanels, setStuckPanels] = useState<number[]>([]);
-  const [anomaly, setAnomaly] = useState('none');
+  const [anomaly, setAnomaly] = useState<AnomalyType>('none');
   const [betaAngle, setBetaAngle] = useState(0); // degrees, 0 = equatorial
   const [flexEnabled, setFlexEnabled] = useState(false);
 
@@ -40,9 +52,44 @@ export default function ComparePage() {
       case 'one-stuck': return [0];
       case 'two-opposite': return [0, 1];
       case 'two-adjacent': return [0, 2];
+      case 'all-stuck': return [0, 1, 2, 3, 4, 5];
       default: return [];
     }
   }, [anomaly]);
+
+  const activeFailureText = anomaly !== 'none' ? FAILURE_SCENARIO_TEXT[anomaly] : null;
+
+  const failureImpactData = useMemo(() => {
+    return CONFIGURATIONS.map((config, i) => {
+      const stuckCount = Math.min(stuckConfig.length, config.panelCount);
+      const deployedCount = config.panelCount - stuckCount;
+      const stuckFraction = stuckCount / config.panelCount;
+
+      let coupling: 'None' | 'Low' | 'Medium' | 'High' | 'Catastrophic' = 'None';
+      if (stuckFraction > 0.75) coupling = 'Catastrophic';
+      else if (stuckFraction > 0.5) coupling = 'High';
+      else if (stuckFraction > 0.25) coupling = 'Medium';
+      else if (stuckFraction > 0) coupling = 'Low';
+
+      const successFraction = (deployedCount / config.panelCount) * 100;
+      const progressBarColor =
+        successFraction > 75
+          ? 'bg-green-500'
+          : successFraction >= 25
+          ? 'bg-amber-500'
+          : 'bg-red-500';
+
+      return {
+        config,
+        color: COLORS[i],
+        stuckCount,
+        deployedCount,
+        coupling,
+        successFraction,
+        progressBarColor,
+      };
+    });
+  }, [stuckConfig]);
 
   const allSimData = useMemo(() => {
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
@@ -282,7 +329,7 @@ export default function ComparePage() {
               <Label className="text-xs text-muted-foreground">Flex Model</Label>
               <Switch checked={flexEnabled} onCheckedChange={setFlexEnabled} />
             </div>
-            <Select value={anomaly} onValueChange={setAnomaly}>
+            <Select value={anomaly} onValueChange={(value) => setAnomaly(value as AnomalyType)}>
               <SelectTrigger className="w-48">
                 <SelectValue placeholder="Anomaly scenario" />
               </SelectTrigger>
@@ -291,10 +338,29 @@ export default function ComparePage() {
                 <SelectItem value="one-stuck">One panel stuck</SelectItem>
                 <SelectItem value="two-opposite">Two panels (opposite)</SelectItem>
                 <SelectItem value="two-adjacent">Two panels (adjacent)</SelectItem>
+                <SelectItem value="all-stuck">All panels stuck (total failure)</SelectItem>
               </SelectContent>
             </Select>
           </div>
         </div>
+
+        {activeFailureText && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5 flex items-center gap-3 text-xs">
+            <AlertTriangle className="w-5 h-5 text-amber-500" />
+            <div className="flex-grow">
+              <p className="font-semibold text-amber-200/90">{activeFailureText}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              {failureImpactData.map(({ config, stuckCount }) => {
+                return (
+                  <span key={config.id} className="font-mono text-[11px] bg-amber-900/30 text-amber-300/80 px-2 py-1 rounded">
+                    {config.shortName}: {stuckCount} stuck
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Tip Deflection chart (only when flex model active) */}
@@ -334,7 +400,16 @@ export default function ComparePage() {
           {/* Angular Velocity over time */}
           <Card className="col-span-1 lg:col-span-2">
             <CardHeader>
-              <CardTitle className="text-sm">Total Angular Velocity (°/s) vs Time</CardTitle>
+              <CardTitle className="text-sm">
+                <>
+                  Total Angular Velocity (°/s) vs Time
+                  {anomaly !== 'none' && (
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 ml-2">
+                      FAILURE MODE
+                    </span>
+                  )}
+                </>
+              </CardTitle>
             </CardHeader>
             <CardContent>
               <ChartContainer config={chartConfig} className="h-[300px]">
@@ -502,122 +577,86 @@ export default function ComparePage() {
                     step={5}
                     value={betaAngle}
                     onChange={e => setBetaAngle(Number(e.target.value))}
-                    className="w-36 accent-primary"
+                    className="w-36"
                   />
-                  <span className="text-xs font-mono w-12 text-right font-semibold">{betaAngle > 0 ? '+' : ''}{betaAngle}°</span>
+                  <span className="text-xs font-mono w-12 text-right">{betaAngle}°</span>
                 </div>
               </div>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-
-                {/* Left: Peak Temperature */}
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-3">
-                    Peak Sunlit Temperature (°C) — β = {betaAngle > 0 ? '+' : ''}{betaAngle}°
-                  </p>
-                  <ChartContainer config={chartConfig} className="h-[240px]">
-                    <BarChart data={thermalComparisonData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                      <YAxis
-                        tick={{ fontSize: 10 }}
-                        domain={[-60, 100]}
-                        label={{ value: '°C', angle: -90, position: 'insideLeft', offset: 10, style: { fontSize: 11 } }}
-                      />
-                      <ChartTooltip
-                        content={({ active, payload }) => {
-                          if (!active || !payload?.length) return null;
-                          const d = payload[0].payload;
-                          return (
-                            <div className="bg-popover border border-border rounded p-2 text-xs shadow">
-                              <p className="font-semibold mb-1">{d.name}</p>
-                              <p>Peak sunlit: <span className="font-mono font-bold text-orange-400">{d.peakTemp}°C</span></p>
-                              <p>Eclipse min: <span className="font-mono">{d.eclipseTemp}°C</span></p>
-                              <p>ΔT: <span className="font-mono">{d.peakTemp - d.eclipseTemp}°C</span></p>
-                            </div>
-                          );
-                        }}
-                      />
-                      <Bar dataKey="peakTemp" radius={[4, 4, 0, 0]}>
-                        {thermalComparisonData.map((entry, index) => (
-                          <rect key={index} fill={entry.fill} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ChartContainer>
-                  <div className="flex gap-4 mt-2 justify-center flex-wrap">
-                    {thermalComparisonData.map((d, i) => (
-                      <div key={i} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: d.fill }} />
-                        <span>{d.name}: <span className="font-mono font-semibold text-foreground">{d.peakTemp}°C</span></span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Right: Stiffness degradation */}
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-3">
-                    Spring Stiffness k(T)/k₀ (%) at Peak Temperature
-                  </p>
-                  <ChartContainer config={chartConfig} className="h-[240px]">
-                    <BarChart data={thermalComparisonData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                      <YAxis
-                        tick={{ fontSize: 10 }}
-                        domain={[80, 105]}
-                        label={{ value: '%', angle: -90, position: 'insideLeft', offset: 10, style: { fontSize: 11 } }}
-                      />
-                      <ChartTooltip
-                        content={({ active, payload }) => {
-                          if (!active || !payload?.length) return null;
-                          const d = payload[0].payload;
-                          return (
-                            <div className="bg-popover border border-border rounded p-2 text-xs shadow">
-                              <p className="font-semibold mb-1">{d.name}</p>
-                              <p>Stiffness: <span className="font-mono font-bold text-blue-400">{d.stiffnessPct}%</span></p>
-                              <p className="text-muted-foreground">Degradation: -{100 - d.stiffnessPct}%</p>
-                            </div>
-                          );
-                        }}
-                      />
-                      <Bar dataKey="stiffnessPct" radius={[4, 4, 0, 0]}>
-                        {thermalComparisonData.map((entry, index) => (
-                          <rect key={index} fill={entry.fill} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ChartContainer>
-                  <div className="flex gap-4 mt-2 justify-center flex-wrap">
-                    {thermalComparisonData.map((d, i) => (
-                      <div key={i} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: d.fill }} />
-                        <span>{d.name}: <span className="font-mono font-semibold text-foreground">{d.stiffnessPct}%</span></span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-              </div>
-
-              {/* Insight row */}
-              <div className="mt-4 pt-4 border-t border-border grid grid-cols-2 md:grid-cols-4 gap-3">
-                {thermalComparisonData.map((d, i) => (
-                  <div key={i} className="bg-muted/40 rounded-lg p-3 text-center">
-                    <div className="text-xs text-muted-foreground mb-1">{d.name}</div>
-                    <div className="text-lg font-bold font-mono" style={{ color: d.fill }}>
-                      {d.peakTemp}°C
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      k = {d.stiffnessPct}% · ΔT = {d.peakTemp - d.eclipseTemp}°C
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <ChartContainer config={chartConfig} className="h-[250px]">
+                <BarChart data={thermalComparisonData} layout="vertical" margin={{ left: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis type="number" tick={{ fontSize: 11 }} label={{ value: 'Peak Panel Temp (°C) / Stiffness Change (%)', position: 'insideBottom', offset: -5, style: { fontSize: 11 } }} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={60} />
+                  <ChartTooltip
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const data = payload[0].payload;
+                        return (
+                          <div className="p-2 text-xs bg-background/90 border rounded-md shadow-lg">
+                            <p className="font-bold">{data.name}</p>
+                            <p>Peak Temp: {data.peakTemp}°C</p>
+                            <p>Eclipse Temp: {data.eclipseTemp}°C</p>
+                            <p>Stiffness: {data.stiffnessPct}%</p>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Bar dataKey="peakTemp" name="Peak Temp (°C)" radius={[0, 4, 4, 0]} />
+                  <Bar dataKey="stiffnessPct" name="Stiffness (%)" fillOpacity={0.5} radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ChartContainer>
             </CardContent>
           </Card>
+
+          {anomaly !== 'none' && (
+            <Card className="col-span-1 lg:col-span-2">
+              <CardHeader>
+                <CardTitle>Failure Mode Impact by Configuration</CardTitle>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {activeFailureText}
+                </p>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {failureImpactData.map(({ config, color, stuckCount, deployedCount, coupling, successFraction, progressBarColor }) => {
+                    return (
+                      <div key={config.id} className="bg-muted/40 rounded-lg p-3 space-y-2 text-xs">
+                        <div className="flex items-center gap-2 font-semibold">
+                          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                          {config.name}
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Stuck panels:</span>
+                          <span>{stuckCount} / {config.panelCount}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Deployed panels:</span>
+                          <span>{deployedCount}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Angular momentum coupling:</span>
+                          <span className="font-semibold">{coupling}</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground text-[11px]">Deploy Success:</span>
+                          <div className="w-full bg-muted rounded-full h-1.5 mt-1">
+                            <div
+                              className={`h-1.5 rounded-full transition-all ${progressBarColor}`}
+                              style={{ width: `${successFraction}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>

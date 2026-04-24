@@ -11,7 +11,7 @@ import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, 
 import { createInitialState, stepSimulation } from '@/lib/physics/engine';
 import { type ThermalParams, DEFAULT_THERMAL_PARAMS } from '@/lib/physics/thermalModel';
 import { type FlexParams, DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
-import { Play, RotateCcw, Pause } from 'lucide-react';
+import { Play, RotateCcw, Pause, AlertTriangle } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
 export default function SimulationPage() {
@@ -31,6 +31,9 @@ export default function SimulationPage() {
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
+  const [failureMode, setFailureMode] = useState<
+    'nominal' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck'
+  >('nominal');
   const params = React.useMemo<SimulationParams>(() => {
     const base: SimulationParams = thermalEnabled
       ? {
@@ -131,17 +134,6 @@ export default function SimulationPage() {
     }
   }, [state.deploying, animate]);
 
-  const handleReset = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
-    setState(createInitialState(config, thermalEnabled ? thermalParams : undefined, flexEnabled ? DEFAULT_FLEX_PARAMS : undefined));
-  }, [config, thermalEnabled, thermalParams, flexEnabled]);
-
-  const handleConfigChange = useCallback((c: ConfigType) => {
-    cancelAnimationFrame(rafRef.current);
-    setConfig(c);
-    setState(createInitialState(c, thermalEnabled ? thermalParams : undefined, flexEnabled ? DEFAULT_FLEX_PARAMS : undefined));
-  }, [thermalEnabled, thermalParams, flexEnabled]);
-
   const handlePanelClick = useCallback((index: number) => {
     setState(s => {
       const panels = [...s.panels];
@@ -153,6 +145,74 @@ export default function SimulationPage() {
       return { ...s, panels };
     });
   }, []);
+
+  const getStuckIndicesForMode = useCallback(
+    (mode: typeof failureMode, cfg: ConfigType): number[] => {
+      const panelCount = CONFIGURATIONS.find(c => c.id === cfg)?.panelCount ?? 2;
+      switch (mode) {
+        case 'one-stuck':
+          return [0];
+        case 'two-opposite':
+          return [0, 1];
+        case 'two-adjacent':
+          return [0, 2];
+        case 'all-stuck':
+          return Array.from({ length: panelCount }, (_, i) => i);
+        default:
+          return [];
+      }
+    },
+    [],
+  );
+
+  const applyFailureModeToState = useCallback(
+    (baseState: SpacecraftState, mode: typeof failureMode, cfg: ConfigType): SpacecraftState => {
+      const indices = getStuckIndicesForMode(mode, cfg);
+      if (indices.length === 0) return baseState;
+      const panels = baseState.panels.map((p, i) =>
+        indices.includes(i)
+          ? { ...p, stuck: true, stuckAngle: 0 }
+          : p,
+      );
+      return { ...baseState, panels };
+    },
+    [getStuckIndicesForMode],
+  );
+
+  const handleReset = useCallback(() => {
+    cancelAnimationFrame(rafRef.current);
+    const base = createInitialState(
+      config,
+      thermalEnabled ? thermalParams : undefined,
+      flexEnabled ? DEFAULT_FLEX_PARAMS : undefined,
+    );
+    setState(applyFailureModeToState(base, failureMode, config));
+  }, [config, thermalEnabled, thermalParams, flexEnabled, failureMode, applyFailureModeToState]);
+
+  const handleConfigChange = useCallback((c: ConfigType) => {
+    cancelAnimationFrame(rafRef.current);
+    setConfig(c);
+    const base = createInitialState(
+      c,
+      thermalEnabled ? thermalParams : undefined,
+      flexEnabled ? DEFAULT_FLEX_PARAMS : undefined,
+    );
+    setState(applyFailureModeToState(base, failureMode, c));
+  }, [thermalEnabled, thermalParams, flexEnabled, failureMode, applyFailureModeToState]);
+
+  const handleFailureModeChange = useCallback(
+    (mode: typeof failureMode) => {
+      cancelAnimationFrame(rafRef.current);
+      setFailureMode(mode);
+      const base = createInitialState(
+        config,
+        thermalEnabled ? thermalParams : undefined,
+        flexEnabled ? DEFAULT_FLEX_PARAMS : undefined,
+      );
+      setState(applyFailureModeToState(base, mode, config));
+    },
+    [config, thermalEnabled, thermalParams, flexEnabled, applyFailureModeToState],
+  );
 
   useEffect(() => {
     return () => cancelAnimationFrame(rafRef.current);
@@ -223,6 +283,33 @@ export default function SimulationPage() {
               }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#ccc' }}>
                 <span>170 K</span><span>255 K</span><span>340 K</span>
+              </div>
+            </div>
+          )}
+
+          {failureMode !== 'nominal' && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold
+                backdrop-blur-sm border shadow-lg
+                ${failureMode === 'all-stuck'
+                  ? 'bg-red-500/20 border-red-500/40 text-red-400'
+                  : failureMode === 'two-adjacent'
+                  ? 'bg-orange-500/20 border-orange-500/40 text-orange-400'
+                  : 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                }`}>
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>
+                  {{
+                    'one-stuck': '1 Panel Stuck — Asymmetric Inertia',
+                    'two-opposite': '2 Panels Stuck — Symmetric Imbalance',
+                    'two-adjacent': '2 Adjacent Stuck — CoM Offset',
+                    'all-stuck': 'ALL PANELS STUCK — Deployment Aborted',
+                  }[failureMode]}
+                </span>
+                <span className="text-[10px] opacity-70 ml-1">
+                  ({getStuckIndicesForMode(failureMode, config).length}/
+                  {CONFIGURATIONS.find(c => c.id === config)?.panelCount} panels)
+                </span>
               </div>
             </div>
           )}
@@ -307,7 +394,8 @@ export default function SimulationPage() {
                   onCheckedChange={(v) => {
                     setFlexEnabled(v);
                     cancelAnimationFrame(rafRef.current);
-                    setState(createInitialState(config, thermalEnabled ? thermalParams : undefined, v ? DEFAULT_FLEX_PARAMS : undefined));
+                    const base = createInitialState(config, thermalEnabled ? thermalParams : undefined, v ? DEFAULT_FLEX_PARAMS : undefined);
+                    setState(applyFailureModeToState(base, failureMode, config));
                   }}
                 />
               </div>
@@ -328,18 +416,46 @@ export default function SimulationPage() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Failure Modes</CardTitle>
+              <CardTitle className="text-sm">Failure Mode</CardTitle>
             </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground">
-                Click any panel in the 3D view to toggle a deployment failure (stuck panel). Stuck panels are highlighted in red.
-              </p>
-              <div className="mt-2 space-y-1">
+            <CardContent className="space-y-1.5">
+              {(
+                [
+                  { id: 'nominal', label: 'Nominal', sub: 'All panels free', dot: 'bg-green-500' },
+                  { id: 'one-stuck', label: '1 Panel Stuck', sub: 'Asymmetric inertia', dot: 'bg-amber-400' },
+                  { id: 'two-opposite', label: '2 Opposite', sub: 'Symmetric torque imbalance', dot: 'bg-amber-500' },
+                  { id: 'two-adjacent', label: '2 Adjacent', sub: 'CoM offset + torque bias', dot: 'bg-orange-500' },
+                  { id: 'all-stuck', label: 'All Stuck', sub: 'Deployment aborted', dot: 'bg-red-500' },
+                ] as const
+              ).map(mode => (
+                <button
+                  key={mode.id}
+                  onClick={() => handleFailureModeChange(mode.id)}
+                  className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors border ${
+                    failureMode === mode.id
+                      ? 'border-primary bg-primary/10 text-foreground'
+                      : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${mode.dot}`} />
+                    <span className="font-medium">{mode.label}</span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5 ml-4">{mode.sub}</div>
+                </button>
+              ))}
+
+              <div className="mt-3 pt-3 border-t border-border space-y-1">
+                <p className="text-[10px] text-muted-foreground mb-1.5">
+                  Live panel status — click 3D panel to toggle
+                </p>
                 {state.panels.map((p, i) => (
                   <div key={i} className="flex items-center justify-between text-xs">
-                    <span>Panel {i + 1}</span>
+                    <span className="text-muted-foreground">Panel {i + 1}</span>
                     <span className={p.stuck ? 'text-destructive font-medium' : 'text-muted-foreground'}>
-                      {p.stuck ? `Stuck @ ${((p.stuckAngle * 180) / Math.PI).toFixed(0)}°` : `${((p.angle * 180) / Math.PI).toFixed(0)}°`}
+                      {p.stuck
+                        ? `Stuck @ ${((p.stuckAngle * 180) / Math.PI).toFixed(0)}°`
+                        : `${((p.angle * 180) / Math.PI).toFixed(0)}°`}
                     </span>
                   </div>
                 ))}
@@ -356,7 +472,8 @@ export default function SimulationPage() {
                   onCheckedChange={(v) => {
                     setThermalEnabled(v);
                     cancelAnimationFrame(rafRef.current);
-                    setState(createInitialState(config, v ? thermalParams : undefined));
+                    const base = createInitialState(config, v ? thermalParams : undefined);
+                    setState(applyFailureModeToState(base, failureMode, config));
                   }}
                 />
               </CardTitle>
