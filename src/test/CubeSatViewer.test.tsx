@@ -1,5 +1,5 @@
 import React from 'react';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CubeSatViewer from '@/components/CubeSatViewer';
 import type { SpacecraftState } from '@/lib/physics/types';
@@ -99,5 +99,30 @@ describe('CubeSatViewer', () => {
 
     const callsAfterRerender = canvasMock.mock.calls.length;
     expect(callsAfterRerender).toBeGreaterThan(callsAfterFirstRender);
+  });
+
+  it('shows CoM telemetry overlay when showCoM is enabled', () => {
+    render(
+      <CubeSatViewer
+        config="long-edge"
+        state={makeState(2)}
+        showCoM
+      />,
+    );
+
+    expect(screen.getByText('Centre of Mass')).toBeInTheDocument();
+    expect(screen.getByText('Offset:')).toBeInTheDocument();
+  });
+
+  it('hides CoM telemetry overlay when showCoM is disabled', () => {
+    render(
+      <CubeSatViewer
+        config="long-edge"
+        state={makeState(2)}
+        showCoM={false}
+      />,
+    );
+
+    expect(screen.queryByText('Centre of Mass')).not.toBeInTheDocument();
   });
 });

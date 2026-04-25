@@ -338,6 +338,172 @@ export function computeTotalAngularMomentum(
   return Htotal;
 }
 
+/**
+ * Compute the instantaneous system Centre of Mass (CoM) in the spacecraft
+ * body frame (with the body's geometric centre at the origin).
+ *
+ * The composite CoM follows the standard mass-weighted centroid formula:
+ *
+ *   r_CoM = (m_body · r_body + Σ_i m_panel_i · r_panel_i) / M_total
+ *
+ * where r_body = [0,0,0] (body CoM is the reference frame origin), and
+ * r_panel_i is the panel geometric centre in the BODY frame at the current
+ * hinge angle θ_i.
+ *
+ * Panel centre in body frame derivation (kinematic chain):
+ *   1. Local-frame centre offset (from panelLayouts spec.pos) is transformed
+ *      to the body frame using the panel's mounting+hinge quaternion:
+ *        r_panel_body = q_mount ⊗ q_hinge(θ) ⊗ spec.pos ⊗ (q_mount ⊗ q_hinge)†
+ *   2. Add hinge pivot position (spec.hinge) expressed in body frame to get
+ *      the panel centre relative to body origin.
+ *   3. For hierarchical (child) panels (parentIndex set): the hinge world position
+ *      is derived from the parent's current orientation quaternion:
+ *        hingeBody_child = hingeBody_parent + spec.hingeOffset rotated by q_parent_mount_hinge
+ *
+ * The offset vector from the nominal CoM (origin) is also returned for
+ * visualisation: a non-zero offset indicates asymmetric deployment (e.g.
+ * stuck panels) and gives rise to a net gravity-gradient torque bias.
+ *
+ * Reference for composite CoM derivation:
+ *   Hughes, P. C. (1986). Spacecraft Attitude Dynamics. John Wiley & Sons.
+ *   Chapter 3, Eq. (3.2.1): r_c = Σ m_i r_i / M.
+ *
+ * Reference for kinematic chain quaternion rotation:
+ *   Wertz, J. R. (ed.) (1978). Spacecraft Attitude Determination and Control.
+ *   Kluwer Academic Publishers. Section 16.1 — quaternion composition.
+ *
+ * @param state   Current spacecraft state (body + panels with live _q quaternions)
+ * @param config  Configuration type (determines panel layout specs)
+ * @param params  Simulation parameters (masses and body dimensions)
+ * @returns Object containing:
+ *   - comBody:  CoM position in BODY frame (Vector3, metres)
+ *   - comWorld: CoM position in WORLD frame (Vector3, metres)
+ *   - offsetMm: CoM offset from nominal origin, converted to mm (scalar, mm)
+ *   - panelCentresWorld: array of per-panel CoM positions in world frame (Vector3[])
+ */
+export function computeSystemCoM(
+  state: SpacecraftState,
+  config: ConfigType,
+  params: SimulationParams = DEFAULT_PARAMS,
+): {
+  comBody: Vector3;
+  comWorld: Vector3;
+  offsetMm: number;
+  panelCentresWorld: Vector3[];
+} {
+  const specs = getPanelSpecs(config, params);
+  const mBody = params.bodyMass;
+  const mPanel = params.panelMass;
+  const nPanels = state.panels.length;
+  const mTotal = mBody + mPanel * nPanels;
+
+  // Body quaternion (world orientation of spacecraft body frame)
+  const qBody = state._bodyQ
+    ? new Quaternion(state._bodyQ.x, state._bodyQ.y, state._bodyQ.z, state._bodyQ.w)
+    : new Quaternion().setFromEuler(
+        new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'),
+      );
+
+  // Body CoM is at origin in body frame → world position = body translation (none in this sim)
+  // r_body_world = [0,0,0] (spacecraft body centre IS the world origin in this simulation)
+  let comBodyX = 0;
+  let comBodyY = 0;
+  let comBodyZ = 0;
+
+  const panelCentresWorld: Vector3[] = [];
+
+  // Build per-panel body-frame hinge positions (needed for hierarchical panels)
+  // panelHingeBody[i] = hinge position of panel i in body frame (live, angle-dependent for children)
+  const panelHingeBody: Vector3[] = new Array(nPanels);
+
+  for (let i = 0; i < nPanels; i++) {
+    const spec = specs[i];
+    const panel = state.panels[i];
+
+    // ── 1. Mounting rotation quaternion (local → body frame) ────────────────
+    const qMount = new Quaternion().setFromEuler(
+      new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'),
+    );
+
+    // ── 2. Hinge rotation quaternion (1-DOF deployment angle) ────────────────
+    const aLocal = hingeAxisUnit(spec.axis);
+    const currentAngle = panel.stuck ? panel.stuckAngle : panel.angle;
+    const qHinge = new Quaternion().setFromAxisAngle(aLocal.clone().normalize(), currentAngle);
+
+    // ── 3. Combined panel orientation in body frame ──────────────────────────
+    //   q_panel_in_body = q_mount ⊗ q_hinge
+    const qPanelInBody = qMount.clone().multiply(qHinge).normalize();
+
+    // ── 4. Resolve hinge pivot position in body frame ────────────────────────
+    //   Root panel: spec.hinge is directly in body frame
+    //   Child panel: derived from parent panel's live orientation
+    let hingeBodyVec: Vector3;
+
+    if (spec.parentIndex !== undefined && spec.hingeOffset !== undefined) {
+      // Child panel: hinge position = parent hinge + hingeOffset rotated by parent's body-frame quaternion
+      const parentHinge = panelHingeBody[spec.parentIndex];
+      const parentSpec = specs[spec.parentIndex];
+      const parentPanel = state.panels[spec.parentIndex];
+
+      const qParentMount = new Quaternion().setFromEuler(
+        new Euler(parentSpec.rot[0], parentSpec.rot[1], parentSpec.rot[2], 'XYZ'),
+      );
+      const aParentLocal = hingeAxisUnit(parentSpec.axis);
+      const parentAngle = parentPanel.stuck ? parentPanel.stuckAngle : parentPanel.angle;
+      const qParentHinge = new Quaternion().setFromAxisAngle(
+        aParentLocal.clone().normalize(), parentAngle,
+      );
+      const qParentInBody = qParentMount.clone().multiply(qParentHinge).normalize();
+
+      const offsetLocal = new Vector3(
+        spec.hingeOffset[0],
+        spec.hingeOffset[1],
+        spec.hingeOffset[2],
+      );
+      const offsetBody = offsetLocal.clone().applyQuaternion(qParentInBody);
+      hingeBodyVec = parentHinge.clone().add(offsetBody);
+    } else {
+      hingeBodyVec = new Vector3(spec.hinge[0], spec.hinge[1], spec.hinge[2]);
+    }
+
+    panelHingeBody[i] = hingeBodyVec;
+
+    // ── 5. Panel centre in body frame ────────────────────────────────────────
+    //   spec.pos is the centre offset in LOCAL frame (before any rotation)
+    //   Rotate by q_panel_in_body to get body-frame offset
+    const posLocal = new Vector3(spec.pos[0], spec.pos[1], spec.pos[2]);
+    const posInBody = posLocal.clone().applyQuaternion(qPanelInBody);
+    const panelCentreBody = hingeBodyVec.clone().add(posInBody);
+
+    // Accumulate mass-weighted CoM in body frame
+    comBodyX += mPanel * panelCentreBody.x;
+    comBodyY += mPanel * panelCentreBody.y;
+    comBodyZ += mPanel * panelCentreBody.z;
+
+    // ── 6. Panel centre in world frame ───────────────────────────────────────
+    //   q_panel_world = q_body ⊗ q_panel_in_body
+    const qPanelWorld = qBody.clone().multiply(qPanelInBody).normalize();
+    const panelCentreWorld = hingeBodyVec
+      .clone()
+      .applyQuaternion(qBody)           // hinge in world
+      .add(posLocal.clone().applyQuaternion(qPanelWorld)); // add rotated offset
+    panelCentresWorld.push(panelCentreWorld);
+  }
+
+  // ── 7. Composite CoM in body frame ─────────────────────────────────────────
+  // r_CoM_body = (m_body · 0 + Σ m_panel · r_panel_body) / M_total
+  // Body contributes 0 because its CoM is the reference origin
+  const comBody = new Vector3(comBodyX / mTotal, comBodyY / mTotal, comBodyZ / mTotal);
+
+  // ── 8. Composite CoM in world frame ────────────────────────────────────────
+  const comWorld = comBody.clone().applyQuaternion(qBody);
+
+  // ── 9. Scalar offset from nominal (mm) ─────────────────────────────────────
+  const offsetMm = comBody.length() * 1000;
+
+  return { comBody, comWorld, offsetMm, panelCentresWorld };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hinge axis from panel spec
 // ─────────────────────────────────────────────────────────────────────────────

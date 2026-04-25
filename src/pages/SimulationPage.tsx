@@ -31,6 +31,7 @@ export default function SimulationPage() {
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
+  const [showCoM, setShowCoM] = useState(false);
   const [failureMode, setFailureMode] = useState<
     'nominal' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck'
   >('nominal');
@@ -260,6 +261,7 @@ export default function SimulationPage() {
             onPanelClick={handlePanelClick}
             thermalEnabled={thermalEnabled}
             thermalState={state.thermalState}
+            showCoM={showCoM}
           />
           <TelemetryOverlay state={state} gravityGradientTorqueMag={ggTorqueMag} />
 
@@ -385,6 +387,11 @@ export default function SimulationPage() {
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Gravity Gradient</Label>
                 <Switch checked={gravityGradientEnabled} onCheckedChange={setGravityGradientEnabled} />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">Centre of Mass</Label>
+                <Switch checked={showCoM} onCheckedChange={setShowCoM} />
               </div>
 
               <div className="flex items-center justify-between">

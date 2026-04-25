@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeTotalAngularMomentum,
+  computeSystemCoM,
   createInitialState,
   stepSimulation,
   runFullSimulation,
@@ -160,5 +161,63 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     // Relative error: |ΔH|/|H₀| < 2% over 1 second
     // Conservation correction significantly reduces drift vs pure RK4
     expect(dHmag / H0mag).toBeLessThan(0.02);
+  });
+});
+
+describe('computeSystemCoM', () => {
+  it('returns near-zero CoM offset for symmetric long-edge stowed state', () => {
+    const state = createInitialState('long-edge');
+    const com = computeSystemCoM(state, 'long-edge', DEFAULT_PARAMS);
+
+    expect(com.offsetMm).toBeLessThan(0.1);
+    expect(Math.abs(com.comBody.x)).toBeLessThan(1e-6);
+    expect(Math.abs(com.comBody.y)).toBeLessThan(1e-6);
+    expect(Math.abs(com.comBody.z)).toBeLessThan(1e-6);
+    expect(com.panelCentresWorld).toHaveLength(state.panels.length);
+  });
+
+  it('shifts CoM upward (+Z in body frame) for long-edge at 90° deployment', () => {
+    const state = createInitialState('long-edge');
+    state.panels = state.panels.map((panel) => ({
+      ...panel,
+      angle: Math.PI / 2,
+      deployed: true,
+    }));
+
+    const com = computeSystemCoM(state, 'long-edge', DEFAULT_PARAMS);
+    expect(com.comBody.z).toBeGreaterThan(0);
+    expect(com.offsetMm).toBeGreaterThan(0.1);
+  });
+
+  it('produces horizontal CoM bias for one-stuck asymmetric long-edge case', () => {
+    const state = createInitialState('long-edge');
+    state.panels[0] = {
+      ...state.panels[0],
+      stuck: true,
+      stuckAngle: 0,
+      angle: 0,
+    };
+    state.panels[1] = {
+      ...state.panels[1],
+      angle: Math.PI / 2,
+      deployed: true,
+    };
+
+    const com = computeSystemCoM(state, 'long-edge', DEFAULT_PARAMS);
+    const horizontalOffsetMm = Math.hypot(com.comBody.x, com.comBody.y) * 1000;
+    expect(horizontalOffsetMm).toBeGreaterThan(0.1);
+  });
+
+  it('returns near-zero CoM offset for all-stuck symmetric short-edge state', () => {
+    const state = createInitialState('short-edge');
+    state.panels = state.panels.map((panel) => ({
+      ...panel,
+      stuck: true,
+      stuckAngle: 0,
+      angle: 0,
+    }));
+
+    const com = computeSystemCoM(state, 'short-edge', DEFAULT_PARAMS);
+    expect(com.offsetMm).toBeLessThan(0.1);
   });
 });

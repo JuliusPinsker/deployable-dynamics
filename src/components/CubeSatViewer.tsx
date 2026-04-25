@@ -4,6 +4,7 @@ import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import type { ConfigType, SpacecraftState, SimulationParams, ThermalState } from '@/lib/physics/types';
 import { DEFAULT_PARAMS } from '@/lib/physics/types';
+import { computeSystemCoM } from '@/lib/physics/engine';
 
 interface CubeSatModelProps {
   config: ConfigType;
@@ -19,6 +20,7 @@ interface CubeSatModelProps {
   thermalEnabled?: boolean;
   /** Current thermal state - temperature drives panel colour */
   thermalState?: ThermalState;
+  showCoM?: boolean;
 }
 
 /**
@@ -456,7 +458,7 @@ function OrientationWidget({ bodyOrientation, size }: { bodyOrientation: { x: nu
   );
 }
 
-import { getPanelSpecs, PanelSpec } from '@/lib/physics/panelLayouts';
+import { getPanelSpecs } from '@/lib/physics/panelLayouts';
 
 interface PanelConfig {
   pos: [number, number, number];
@@ -671,25 +673,257 @@ function CubeSatScene({
 }
 
 export default function CubeSatViewer(props: CubeSatModelProps) {
+  const { config, state, params = DEFAULT_PARAMS, showCoM } = props;
+
+  const comData = useMemo(() => {
+    if (!showCoM) return null;
+    return computeSystemCoM(state, config, params);
+  }, [showCoM, state, config, params]);
+
   return (
-    <Canvas
-      camera={{ position: [1.5, 1.5, 1.5], fov: 45, up: [0, 0, 1] }}
-      style={{ background: 'transparent' }}
-      gl={{ alpha: true, antialias: true }}
-    >
-      <ambientLight intensity={0.4} />
-      <directionalLight position={[5, 5, 5]} intensity={0.8} castShadow />
-      <directionalLight position={[-3, 2, -3]} intensity={0.3} />
-      <CubeSatScene {...props} />
-      <OrbitControls
-        autoRotate={props.autoRotate}
-        autoRotateSpeed={1}
-        enableDamping
-        dampingFactor={0.05}
-        up={[0, 0, 1]}
-      />
-      {/* Grid on XY plane (Z is up) */}
-      <gridHelper args={[4, 20, '#333333', '#222222']} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -0.8]} />
-    </Canvas>
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <Canvas
+        camera={{ position: [1.5, 1.5, 1.5], fov: 45, up: [0, 0, 1] }}
+        style={{ background: 'transparent' }}
+        gl={{ alpha: true, antialias: true }}
+      >
+        <ambientLight intensity={0.4} />
+        <directionalLight position={[5, 5, 5]} intensity={0.8} castShadow />
+        <directionalLight position={[-3, 2, -3]} intensity={0.3} />
+        <CubeSatScene {...props} />
+        <OrbitControls
+          autoRotate={props.autoRotate}
+          autoRotateSpeed={1}
+          enableDamping
+          dampingFactor={0.05}
+          up={[0, 0, 1]}
+        />
+        {/* Grid on XY plane (Z is up) */}
+        <gridHelper args={[4, 20, '#333333', '#222222']} rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -0.8]} />
+
+        {comData && (() => {
+          const cx = comData.comWorld.x;
+          const cy = comData.comWorld.y;
+          const cz = comData.comWorld.z;
+
+          const markerColor =
+            comData.offsetMm < 2 ? '#22c55e'
+            : comData.offsetMm < 10 ? '#f59e0b'
+            : '#ef4444';
+
+          // Axis arm half-length in metres (clearly visible at CubeSat scale)
+          const ARM = 0.06;
+
+          return (
+            <group renderOrder={999}>
+
+              {/* ── Solid core sphere — always on top ─────────────────────── */}
+              <mesh position={[cx, cy, cz]} renderOrder={999}>
+                <sphereGeometry args={[0.012, 16, 16]} />
+                <meshBasicMaterial
+                  color={markerColor}
+                  depthTest={false}
+                  transparent
+                  opacity={1}
+                />
+              </mesh>
+
+              {/* ── Outer glow halo — larger, semi-transparent ─────────────── */}
+              <mesh position={[cx, cy, cz]} renderOrder={998}>
+                <sphereGeometry args={[0.022, 16, 16]} />
+                <meshBasicMaterial
+                  color={markerColor}
+                  depthTest={false}
+                  transparent
+                  opacity={0.18}
+                />
+              </mesh>
+
+              {/* ── X-axis arm (red) ──────────────────────────────────────── */}
+              <line>
+                <bufferGeometry>
+                  <bufferAttribute
+                    attach="attributes-position"
+                    args={[new Float32Array([cx - ARM, cy, cz, cx + ARM, cy, cz]), 3]}
+                  />
+                </bufferGeometry>
+                <lineBasicMaterial color="#ef4444" depthTest={false} linewidth={2} />
+              </line>
+
+              {/* ── Y-axis arm (green) ──────────────────────────────────────── */}
+              <line>
+                <bufferGeometry>
+                  <bufferAttribute
+                    attach="attributes-position"
+                    args={[new Float32Array([cx, cy - ARM, cz, cx, cy + ARM, cz]), 3]}
+                  />
+                </bufferGeometry>
+                <lineBasicMaterial color="#22c55e" depthTest={false} linewidth={2} />
+              </line>
+
+              {/* ── Z-axis arm (blue) ──────────────────────────────────────── */}
+              <line>
+                <bufferGeometry>
+                  <bufferAttribute
+                    attach="attributes-position"
+                    args={[new Float32Array([cx, cy, cz - ARM, cx, cy, cz + ARM]), 3]}
+                  />
+                </bufferGeometry>
+                <lineBasicMaterial color="#3b82f6" depthTest={false} linewidth={2} />
+              </line>
+
+              {/* ── Equatorial ring around CoM ────────────────────────────── */}
+              <mesh position={[cx, cy, cz]} renderOrder={998}>
+                <ringGeometry args={[0.018, 0.024, 36]} />
+                <meshBasicMaterial
+                  color={markerColor}
+                  depthTest={false}
+                  side={2}
+                  transparent
+                  opacity={0.75}
+                />
+              </mesh>
+
+              {/* ── Per-panel centre dots (small, always-on-top) ─────────── */}
+              {comData.panelCentresWorld.map((pos, i) => (
+                <mesh
+                  key={`pcom-${i}`}
+                  position={[pos.x, pos.y, pos.z]}
+                  renderOrder={997}
+                >
+                  <sphereGeometry args={[0.007, 8, 8]} />
+                  <meshBasicMaterial
+                    color="#94a3b8"
+                    depthTest={false}
+                    transparent
+                    opacity={0.8}
+                  />
+                </mesh>
+              ))}
+
+              {/* ── Dashed lines from each panel CoM to system CoM ─────────── */}
+              {comData.panelCentresWorld.map((pos, i) => (
+                <line key={`pcom-line-${i}`}>
+                  <bufferGeometry>
+                    <bufferAttribute
+                      attach="attributes-position"
+                      args={[
+                        new Float32Array([pos.x, pos.y, pos.z, cx, cy, cz]),
+                        3,
+                      ]}
+                    />
+                  </bufferGeometry>
+                  <lineBasicMaterial
+                    color="#94a3b8"
+                    depthTest={false}
+                    transparent
+                    opacity={0.35}
+                  />
+                </line>
+              ))}
+
+            </group>
+          );
+        })()}
+      </Canvas>
+      {showCoM && comData && (
+        <div style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          background: 'rgba(0, 0, 0, 0.82)',
+          border: `1px solid ${
+            comData.offsetMm < 2 ? '#22c55e44'
+            : comData.offsetMm < 10 ? '#f59e0b44'
+            : '#ef444444'
+          }`,
+          borderRadius: 10,
+          padding: '10px 14px',
+          pointerEvents: 'none',
+          minWidth: 176,
+          boxShadow: `0 0 18px ${
+            comData.offsetMm < 2 ? '#22c55e22'
+            : comData.offsetMm < 10 ? '#f59e0b22'
+            : '#ef444422'
+          }`,
+        }}>
+          {/* Header row with colour dot */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 7,
+            marginBottom: 8, fontSize: 11,
+            color: '#aaa', fontWeight: 700,
+            letterSpacing: '0.06em', textTransform: 'uppercase',
+          }}>
+            <div style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: comData.offsetMm < 2 ? '#22c55e'
+                        : comData.offsetMm < 10 ? '#f59e0b'
+                        : '#ef4444',
+              flexShrink: 0,
+              boxShadow: `0 0 6px ${
+                comData.offsetMm < 2 ? '#22c55e'
+                : comData.offsetMm < 10 ? '#f59e0b'
+                : '#ef4444'
+              }`,
+            }} />
+            Centre of Mass
+          </div>
+
+          {/* XYZ body-frame coordinates */}
+          <div style={{
+            fontFamily: 'monospace', fontSize: 12,
+            lineHeight: 1.85, color: '#ccc',
+          }}>
+            {[
+              { label: 'X', val: comData.comBody.x, color: '#f87171' },
+              { label: 'Y', val: comData.comBody.y, color: '#4ade80' },
+              { label: 'Z', val: comData.comBody.z, color: '#60a5fa' },
+            ].map(({ label, val, color }) => (
+              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+                <span style={{ color }}>{label}:</span>
+                <span style={{ color: '#fff', fontWeight: 600 }}>
+                  {(val * 1000).toFixed(2)} mm
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Offset severity row */}
+          <div style={{
+            marginTop: 8, paddingTop: 8,
+            borderTop: '1px solid #2a2a2a',
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center',
+          }}>
+            <span style={{ fontSize: 11, color: '#888' }}>Offset</span>
+            <span style={{
+              fontSize: 13, fontWeight: 800, fontFamily: 'monospace',
+              color: comData.offsetMm < 2 ? '#22c55e'
+                   : comData.offsetMm < 10 ? '#f59e0b'
+                   : '#ef4444',
+            }}>
+              {comData.offsetMm.toFixed(2)} mm
+            </span>
+          </div>
+
+          {/* Status label */}
+          <div style={{
+            marginTop: 6,
+            fontSize: 10,
+            textAlign: 'center',
+            color: comData.offsetMm < 2 ? '#22c55e'
+                 : comData.offsetMm < 10 ? '#f59e0b'
+                 : '#ef4444',
+            fontWeight: 600,
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase',
+          }}>
+            {comData.offsetMm < 2 ? '● Nominal'
+            : comData.offsetMm < 10 ? '⚠ Asymmetric'
+            : '✕ Severe Offset'}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
