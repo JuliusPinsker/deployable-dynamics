@@ -37,13 +37,22 @@ function makeState(overrides?: Partial<SpacecraftState>): SpacecraftState {
 describe('TelemetryOverlay', () => {
   it('renders angular velocity, deployment percentage, contact force, and time', () => {
     const state = makeState();
-    render(<TelemetryOverlay state={state} />);
+    render(
+      <TelemetryOverlay
+        state={state}
+        eDetumbleMJ={0.456}
+        delayMagnitude={0}
+        delayUnit="ns"
+      />,
+    );
 
     expect(screen.getByText('180.00°/s')).toBeInTheDocument();
     expect(screen.getByText('90.00°/s')).toBeInTheDocument();
     expect(screen.getByText('0.00°/s')).toBeInTheDocument();
     expect(screen.getByText('75%')).toBeInTheDocument();
     expect(screen.getByText('12.4 N')).toBeInTheDocument();
+    expect(screen.getByText('E detumble')).toBeInTheDocument();
+    expect(screen.getByText('0.456 mJ')).toBeInTheDocument();
     expect(screen.getByText('12.35s')).toBeInTheDocument();
   });
 
@@ -71,20 +80,27 @@ describe('TelemetryOverlay', () => {
       ],
     });
 
-    render(<TelemetryOverlay state={state} />);
+    render(<TelemetryOverlay state={state} delayMagnitude={0} delayUnit="ns" />);
     expect(screen.getByText('100%')).toBeInTheDocument();
   });
 
   it('renders gravity gradient torque when provided', () => {
     const state = makeState();
-    render(<TelemetryOverlay state={state} gravityGradientTorqueMag={2e-6} />);
+    render(
+      <TelemetryOverlay
+        state={state}
+        gravityGradientTorqueMag={2e-6}
+        delayMagnitude={0}
+        delayUnit="ns"
+      />,
+    );
 
     expect(screen.getByText('2.000 µN·m')).toBeInTheDocument();
   });
 
   it('renders em dash for gravity gradient torque when absent', () => {
     const state = makeState();
-    render(<TelemetryOverlay state={state} />);
+    render(<TelemetryOverlay state={state} delayMagnitude={0} delayUnit="ns" />);
 
     expect(screen.getByText('—')).toBeInTheDocument();
   });
@@ -115,7 +131,14 @@ describe('TelemetryOverlay', () => {
       ],
     });
 
-    render(<TelemetryOverlay state={state} panelLength={0.1} />);
+    render(
+      <TelemetryOverlay
+        state={state}
+        panelLength={0.1}
+        delayMagnitude={0}
+        delayUnit="ns"
+      />,
+    );
 
     expect(screen.getByText('Tip Flex')).toBeInTheDocument();
     expect(screen.getByText('3.49 mm')).toBeInTheDocument();

@@ -27,6 +27,13 @@ export interface HingeParams {
   // Optional per-panel start delays (seconds) for short-edge config panels [0..3].
   // Delays shift activation time only and do not change motion profile.
   shortEdgeStartDelays?: [number, number, number, number];
+  /**
+   * Per-panel activation delay in seconds for ALL configurations.
+   * Index i corresponds to panel i in the layout spec.
+   * Panels not listed default to 0 (immediate activation).
+   * This generalises shortEdgeStartDelays to all config types.
+   */
+  panelStartDelays?: number[];
   // Hinge torque law model. Default behavior is linear spring-damper.
   hingeModel?: 'linear' | 'bistable';
   // Optional bistable tape-spring parameters when hingeModel is 'bistable'.

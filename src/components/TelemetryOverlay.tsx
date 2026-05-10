@@ -4,6 +4,9 @@ import type { SpacecraftState } from '@/lib/physics/types';
 interface TelemetryOverlayProps {
   state: SpacecraftState;
   gravityGradientTorqueMag?: number;
+  eDetumbleMJ?: number;
+  delayMagnitude: number;
+  delayUnit: 'ns' | 'µs' | 'ms';
   panelLength?: number; // metres, for computing tip deflection in mm
 }
 
@@ -18,11 +21,23 @@ function toDegPerSec(rad: number): string {
 export default function TelemetryOverlay({
   state,
   gravityGradientTorqueMag,
+  eDetumbleMJ,
+  delayMagnitude,
+  delayUnit,
   panelLength = 0.1, // default 0.1 m
 }: TelemetryOverlayProps) {
   const maxContact = Math.max(...state.panels.map(p => p.contactForce), 0);
   const avgAngle = state.panels.reduce((s, p) => s + p.angle, 0) / state.panels.length;
   const deployPct = Math.min(100, (avgAngle / (Math.PI / 2)) * 100);
+  const eDetumbleValue = eDetumbleMJ ?? 0;
+  const eDetumbleColor = eDetumbleValue > 1
+    ? '#f97316'
+    : eDetumbleValue > 0.1
+    ? '#eab308'
+    : '#22c55e';
+  const delayDisplay = delayMagnitude === 0
+    ? '0 (ideal sync)'
+    : `${delayMagnitude} ${delayUnit}`;
 
   // Compute max tip deflection in mm from tipDeflectionDeg (if flex model active)
   const hasFlex = state.panels.some(p => p.tipDeflectionDeg !== undefined);
@@ -83,6 +98,13 @@ export default function TelemetryOverlay({
         </span>
       </div>
 
+      <div className="border-t border-border pt-1 flex justify-between">
+        <span className="text-muted-foreground">E detumble</span>
+        <span className="font-mono font-semibold" style={{ color: eDetumbleColor }}>
+          {eDetumbleValue.toFixed(3)} mJ
+        </span>
+      </div>
+
       {/* Flexible panel tip deflection (if flex model active) */}
       {maxTipDeflectionMm !== undefined && (
         <div className="border-t border-border pt-1 flex justify-between">
@@ -92,6 +114,11 @@ export default function TelemetryOverlay({
           </span>
         </div>
       )}
+
+      <div className="border-t border-border pt-1 flex justify-between">
+        <span className="text-muted-foreground">Δt actuation</span>
+        <span>{delayDisplay}</span>
+      </div>
 
       <div className="border-t border-border pt-1 flex justify-between">
         <span className="text-muted-foreground">Time</span>

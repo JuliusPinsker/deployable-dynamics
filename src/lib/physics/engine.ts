@@ -60,6 +60,40 @@ function bodyInertiaDiag(params: SimulationParams): Vector3 {
 }
 
 /**
+ * Rotational kinetic energy of the spacecraft body (millijoules).
+ *
+ * E = 1/2 · (Ixx·ωx² + Iyy·ωy² + Izz·ωz²)
+ *
+ * ω must be expressed in the body principal frame.
+ * Pass state.angularVelocity (world frame) and state._bodyQ so the
+ * function can rotate ω into the body frame internally.
+ *
+ * Reference: Hughes (1986), Spacecraft Attitude Dynamics, Ch. 4 §4.2.3
+ *
+ * @param omegaWorld  Angular velocity vector in world frame (rad/s)
+ * @param bodyQ       Body quaternion (world→body rotation)
+ * @param params      SimulationParams — used to call bodyInertiaDiag
+ * @returns           Rotational KE in millijoules (mJ)
+ */
+export function computeEDetumble(
+  omegaWorld: Vector3,
+  bodyQ: Quaternion,
+  params: SimulationParams,
+): number {
+  const Ib = bodyInertiaDiag(params);
+  const omegaBody = omegaWorld
+    .clone()
+    .applyQuaternion(bodyQ.clone().conjugate());
+  return (
+    0.5 *
+    (Ib.x * omegaBody.x * omegaBody.x +
+      Ib.y * omegaBody.y * omegaBody.y +
+      Ib.z * omegaBody.z * omegaBody.z) *
+    1000 // J → mJ
+  );
+}
+
+/**
  * Diagonal inertia for a rectangular panel plate about the hinge edge.
  * Panel body frame: X = outward (L), Y = thickness (t), Z = span (W).
  * Hinge runs along Z at the X = 0 edge (parallel-axis theorem applied).
@@ -711,13 +745,11 @@ export function stepSimulation(
       deployedNew = progress >= 1;
       if (deployedNew) { thetaNew = panelMaxAngle; omegaRelNew = 0; }
 
-      // Effective hinge-axis inertia via full tensor:  I_eff = 1 / (â · I⁻¹ · â)
-      const alphaUnit = applyInverseInertia(Ip, qPanel, aWorld);
-      const Ieff = 1 / alphaUnit.dot(aWorld);
-
-      // Equivalent torque τ = I_eff · θ̈  (reaction couples to body)
+      // Kinematic panels should not inject reaction torque into body dynamics.
+      // Momentum conservation is enforced by the correction loop using the
+      // prescribed panel angles.
       thetaDDot = (omegaRelNew - omegaRel) / dt;
-      hingeTorque = Ieff * thetaDDot;
+      hingeTorque = 0;
       contactForceNew = 0;
 
     } else {
@@ -838,21 +870,29 @@ export function stepSimulation(
       const spec = specs[i];
       const up = updates[i];
 
-      if (panel.stuck) continue;
+      // Stuck panels still co-rotate with the body, so they contribute inertia
+      // with zero relative hinge rate.
+      const qMountIter = new Quaternion().setFromEuler(
+        new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'),
+      );
+      const aLocalIter = hingeAxisUnit(spec.axis);
+      const thetaIter = panel.stuck ? panel.stuckAngle : up.thetaNew;
+      const omegaRelIter = panel.stuck ? 0 : up.omegaRelNew;
 
       // Panel inertia tensor (diagonal, panel body frame about hinge edge)
       const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
 
       // Panel orientation using RK4-predicted body orientation:
       // q_panel = q_body_RK4 ⊗ q_mount ⊗ q_hinge_local(θ_new)
-      const qHingeNew = new Quaternion().setFromAxisAngle(up.aLocal.clone().normalize(), up.thetaNew);
-      const qPanelNew = qBodyRK4.clone().multiply(up.qMount.clone()).multiply(qHingeNew).normalize();
+      const qHingeNew = new Quaternion().setFromAxisAngle(aLocalIter.clone().normalize(), thetaIter);
+      const qPanelNew = qBodyRK4.clone().multiply(qMountIter.clone()).multiply(qHingeNew).normalize();
 
       // Hinge axis in world frame (using RK4-predicted body orientation)
-      const aWorldNew = up.aBody.clone().applyQuaternion(qBodyRK4.clone());
+      const aBodyIter = aLocalIter.clone().applyQuaternion(qMountIter.clone());
+      const aWorldNew = aBodyIter.clone().applyQuaternion(qBodyRK4.clone());
 
       // Panel angular velocity: ω_panel = ω_body_iter + θ̇_new · â_world
-      const omegaPanelNew = omegaBodyIter.clone().add(aWorldNew.clone().multiplyScalar(up.omegaRelNew));
+      const omegaPanelNew = omegaBodyIter.clone().add(aWorldNew.clone().multiplyScalar(omegaRelIter));
 
       // Rotate ω to panel body frame, apply diagonal inertia, rotate back
       const omegaPanelLocal = omegaPanelNew.clone().applyQuaternion(qPanelNew.clone().conjugate());
@@ -901,7 +941,7 @@ export function stepSimulation(
   let qBodyNew: Quaternion;
   let omegaBodyNew: Vector3;
 
-  if (!hasExternalTorque || H0mag < 1e-12) {
+  if (!hasExternalTorque || H0mag < 1e-9) {
     // Pure free-float: use conservation-derived ω directly
     qBodyNew = qBodyRK4;
     omegaBodyNew = omegaConservedWorld;
@@ -993,6 +1033,35 @@ export interface SimulationFrame {
   attitudeCouplingDeg?: number;
   /** Panel tip deflections in degrees (undefined if flex model inactive). */
   tipDeflectionDeg?: number[];
+  /**
+   * Rotational kinetic energy of the spacecraft body at this timestep (mJ).
+   *
+   * Defined as the scalar rotational KE of the body alone (not panels),
+   * expressed in the body principal frame:
+   *
+   *   E = ½ · (Ixx·ωx² + Iyy·ωy² + Izz·ωz²)
+   *
+   * where ω components are the body angular velocity projected onto the
+   * principal axes (body frame), and Ixx/Iyy/Izz are the diagonal
+   * principal moments of inertia from bodyInertiaDiag().
+   *
+   * Converted to millijoules (× 1000) for readability in telemetry.
+   *
+   * During free tumble this value is constant (energy conserved).
+   * During panel deployment it changes as angular momentum redistributes
+   * between the body and deploying panels — a decrease indicates energy
+   * being transferred into panel rotational motion (desirable for passive
+   * detumbling via the "scissors" effect).
+   *
+   * In active B-dot detumbling this metric is the primary convergence
+   * indicator — detumbling is complete when E_detumble → 0.
+   *
+   * Reference: Hughes, P. C. (1986). Spacecraft Attitude Dynamics.
+   * Wiley, Chapter 4 — rotational kinetic energy of a rigid body.
+   *
+   * Units: millijoules (mJ)
+   */
+  eDetumble: number;
 }
 
 export function runFullSimulation(
@@ -1057,6 +1126,12 @@ export function runFullSimulation(
       const attitudeCouplingRad = 2 * Math.acos(MathUtils.clamp(Math.abs(qRel.w), -1, 1));
       const attitudeCouplingDeg = MathUtils.radToDeg(attitudeCouplingRad);
 
+      const eDetumbleMJ = computeEDetumble(
+        state.angularVelocity,
+        state._bodyQ ?? new Quaternion(),
+        params,
+      );
+
       frames.push({
         time: Math.round(state.time * 1000) / 1000,
         angularVelocity: state.angularVelocity.clone(),
@@ -1083,6 +1158,7 @@ export function runFullSimulation(
         tipDeflectionDeg: state.flexState
           ? state.panels.map(p => p.tipDeflectionDeg ?? 0)
           : undefined,
+        eDetumble: Math.round(eDetumbleMJ * 1000) / 1000,
       });
     }
 

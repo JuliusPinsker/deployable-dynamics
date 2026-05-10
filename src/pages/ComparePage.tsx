@@ -135,6 +135,25 @@ export default function ComparePage() {
     return data;
   }, [allSimData]);
 
+  // Detumbling energy over time (mJ)
+  const eDetumbleData = useMemo(() => {
+    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
+    const maxLen = Math.max(...configs.map(c => allSimData[c].length));
+    const data: any[] = [];
+    for (let i = 0; i < maxLen; i += 2) {
+      const point: any = {};
+      for (const c of configs) {
+        const frame = allSimData[c][i];
+        if (frame) {
+          point.time = frame.time;
+          point[c] = Number(frame.eDetumble.toFixed(3));
+        }
+      }
+      if (point.time !== undefined) data.push(point);
+    }
+    return data;
+  }, [allSimData]);
+
   // Peak acceleration bar chart
   const peakAccelData = useMemo(() => {
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
@@ -422,6 +441,35 @@ export default function ComparePage() {
                   <Line type="monotone" dataKey="double-long-edge" stroke={COLORS[1]} strokeWidth={2} dot={false} />
                   <Line type="monotone" dataKey="short-edge" stroke={COLORS[2]} strokeWidth={2} dot={false} />
                   <Line type="monotone" dataKey="short-edge-long-edge" stroke={COLORS[3]} strokeWidth={2} dot={false} />
+                </LineChart>
+              </ChartContainer>
+              <div className="flex gap-4 mt-2 justify-center">
+                {CONFIGURATIONS.map((c, i) => (
+                  <div key={c.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <div className="w-3 h-0.5 rounded" style={{ backgroundColor: COLORS[i] }} />
+                    {c.shortName}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Detumbling energy over time */}
+          <Card className="col-span-1 lg:col-span-2">
+            <CardHeader>
+              <CardTitle className="text-sm">Detumbling Energy (mJ) vs Time</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ChartContainer config={chartConfig} className="h-[300px]">
+                <LineChart data={eDetumbleData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="time" tick={{ fontSize: 11 }} label={{ value: 'Time (s)', position: 'insideBottom', offset: -5, style: { fontSize: 11 } }} />
+                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'mJ', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Line type="monotone" dataKey="long-edge" stroke={COLORS[0]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+                  <Line type="monotone" dataKey="double-long-edge" stroke={COLORS[1]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+                  <Line type="monotone" dataKey="short-edge" stroke={COLORS[2]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+                  <Line type="monotone" dataKey="short-edge-long-edge" stroke={COLORS[3]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
                 </LineChart>
               </ChartContainer>
               <div className="flex gap-4 mt-2 justify-center">

@@ -134,6 +134,30 @@ describe('sample simulation (3U)', () => {
     expect(delayedFrame!.panelAngles[3]).toBeCloseTo(leaderFrame!.panelAngles[2], 1);
   });
 
+  it('5 ms per-panel delay produces different trajectory than ideal sync', () => {
+    const delay = 5e-3;
+    const paramsIdeal = {
+      ...DEFAULT_PARAMS,
+      hinge: {
+        ...DEFAULT_PARAMS.hinge,
+        panelStartDelays: [0, 0, 0, 0],
+      },
+    };
+    const paramsDelayed = {
+      ...DEFAULT_PARAMS,
+      hinge: {
+        ...DEFAULT_PARAMS.hinge,
+        panelStartDelays: [0, delay, 0, delay],
+      },
+    };
+
+    const framesIdeal = runFullSimulation('short-edge', paramsIdeal, 6);
+    const framesDelayed = runFullSimulation('short-edge', paramsDelayed, 6);
+    const wIdeal = framesIdeal.at(-1)!.angularVelocity;
+    const wDelayed = framesDelayed.at(-1)!.angularVelocity;
+    expect(wIdeal).not.toEqual(wDelayed);
+  });
+
   it('coupled enforces three stages with optional short-edge delay', () => {
     const delay = 0.8;
     const params = {

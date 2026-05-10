@@ -7,12 +7,18 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, type SimulationParams } from '@/lib/physics/types';
-import { createInitialState, stepSimulation } from '@/lib/physics/engine';
+import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, type SimulationParams, Quaternion } from '@/lib/physics/types';
+import { computeEDetumble, createInitialState, stepSimulation } from '@/lib/physics/engine';
 import { type ThermalParams, DEFAULT_THERMAL_PARAMS } from '@/lib/physics/thermalModel';
 import { type FlexParams, DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
 import { Play, RotateCcw, Pause, AlertTriangle } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
+
+const UNIT_TO_SECONDS: Record<'ns' | 'µs' | 'ms', number> = {
+  ns: 1e-9,
+  µs: 1e-6,
+  ms: 1e-3,
+};
 
 export default function SimulationPage() {
   const [searchParams] = useSearchParams();
@@ -27,6 +33,8 @@ export default function SimulationPage() {
     createInitialState(config, thermalEnabled ? thermalParams : undefined, flexEnabled ? DEFAULT_FLEX_PARAMS : undefined)
   );
   const [speed, setSpeed] = useState(1);
+  const [delayMagnitude, setDelayMagnitude] = useState<number>(0);
+  const [delayUnit, setDelayUnit] = useState<'ns' | 'µs' | 'ms'>('µs');
   const [ggTorqueMag, setGgTorqueMag] = useState<number | undefined>(undefined);
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
@@ -35,6 +43,12 @@ export default function SimulationPage() {
   const [failureMode, setFailureMode] = useState<
     'nominal' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck'
   >('nominal');
+  const delaySeconds = delayMagnitude * UNIT_TO_SECONDS[delayUnit];
+  const delayPresets = [
+    { label: 'Ideal (0 ns)', magnitude: 0, unit: 'ns' },
+    { label: 'Nominal (250 µs)', magnitude: 250, unit: 'µs' },
+    { label: 'Worst-case (5 ms)', magnitude: 5, unit: 'ms' },
+  ] as const;
   const params = React.useMemo<SimulationParams>(() => {
     const base: SimulationParams = thermalEnabled
       ? {
@@ -48,12 +62,17 @@ export default function SimulationPage() {
           },
         }
       : { ...DEFAULT_PARAMS };
+    const shortEdgeStartDelays: [number, number, number, number] = [0, delaySeconds, 0, delaySeconds];
     return {
       ...base,
+      hinge: {
+        ...base.hinge,
+        shortEdgeStartDelays,
+      },
       gravityGradientEnabled,
       ...(flexEnabled ? { flex: DEFAULT_FLEX_PARAMS } : {}),
     };
-  }, [thermalEnabled, gravityGradientEnabled, flexEnabled]);
+  }, [thermalEnabled, gravityGradientEnabled, flexEnabled, delaySeconds]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -263,7 +282,17 @@ export default function SimulationPage() {
             thermalState={state.thermalState}
             showCoM={showCoM}
           />
-          <TelemetryOverlay state={state} gravityGradientTorqueMag={ggTorqueMag} />
+          <TelemetryOverlay
+            state={state}
+            gravityGradientTorqueMag={ggTorqueMag}
+            eDetumbleMJ={computeEDetumble(
+              state.angularVelocity,
+              state._bodyQ ?? new Quaternion(),
+              params,
+            )}
+            delayMagnitude={delayMagnitude}
+            delayUnit={delayUnit}
+          />
 
           {thermalEnabled && (
             <div style={{
@@ -367,6 +396,52 @@ export default function SimulationPage() {
                   max={5}
                   step={0.25}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">Timing Discrepancy</Label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={delayMagnitude}
+                    onChange={e => setDelayMagnitude(Math.max(0, Number(e.target.value)))}
+                    className="w-20 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+                  />
+                  <div className="flex items-center gap-1">
+                    {(['ns', 'µs', 'ms'] as const).map(unit => (
+                      <button
+                        key={unit}
+                        type="button"
+                        onClick={() => setDelayUnit(unit)}
+                        aria-pressed={delayUnit === unit}
+                        className={`px-2 py-1 rounded-md text-[10px] border transition-colors ${
+                          delayUnit === unit
+                            ? 'border-primary bg-primary/10 text-foreground'
+                            : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
+                        }`}
+                      >
+                        {unit}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {delayPresets.map(preset => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        setDelayMagnitude(preset.magnitude);
+                        setDelayUnit(preset.unit);
+                      }}
+                      className="rounded-md border border-border bg-secondary/50 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground hover:bg-secondary"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="flex items-center justify-between">

@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
+  computeEDetumble,
   computeTotalAngularMomentum,
   computeSystemCoM,
   createInitialState,
   stepSimulation,
   runFullSimulation,
 } from '../lib/physics/engine';
-import { DEFAULT_PARAMS } from '../lib/physics/types';
-import type { Vector3, SimulationParams, SpacecraftState } from '../lib/physics/types';
+import { DEFAULT_PARAMS, Vector3, Quaternion } from '../lib/physics/types';
+import type { SimulationParams, SpacecraftState } from '../lib/physics/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helper: vector magnitude
@@ -50,6 +51,10 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     // Run full simulation for 5 seconds
     const frames = runFullSimulation(config, FREE_FLOAT_PARAMS, maxTime, []);
 
+    // eDetumble sanity checks (KE >= 0, and zero at rest)
+    expect(frames[0].eDetumble).toBeCloseTo(0, 6);
+    frames.forEach(f => expect(f.eDetumble).toBeGreaterThanOrEqual(0));
+
     // Find the frame closest to t=5s
     const targetTime = 5.0;
     let bestFrame = frames[frames.length - 1];
@@ -91,6 +96,20 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
       // Absolute error: |H_final| < 1e-6 kg·m²/s
       expect(v3Mag(Hfinal)).toBeLessThan(1e-6);
     }
+  });
+
+  it('computeEDetumble returns positive KE for non-zero omega', () => {
+    const omega = new Vector3(0.1, 0, 0);
+    const q = new Quaternion();
+    const result = computeEDetumble(omega, q, DEFAULT_PARAMS);
+
+    expect(result).toBeGreaterThan(0);
+
+    const Ixx = (DEFAULT_PARAMS.bodyMass * (
+      DEFAULT_PARAMS.bodyHeight ** 2 + DEFAULT_PARAMS.bodyDepth ** 2
+    )) / 12;
+    const expected = 0.5 * Ixx * omega.x * omega.x * 1000;
+    expect(result).toBeCloseTo(expected, 6);
   });
 
   it('tracks attitudeCouplingDeg in SimulationFrame', () => {
