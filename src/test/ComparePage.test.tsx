@@ -1,6 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import { CONFIGURATIONS } from '@/lib/physics/types';
 
 const runFullSimulationMock = vi.fn();
@@ -103,7 +104,11 @@ describe('ComparePage failure scenario phases', () => {
   });
 
   it('phase 1: exposes all-stuck option and passes all stuck indices to runFullSimulation', async () => {
-    render(<ComparePage />);
+    render(
+      <MemoryRouter>
+        <ComparePage />
+      </MemoryRouter>,
+    );
 
     expect(screen.getByText('All panels stuck (total failure)')).toBeInTheDocument();
 
@@ -127,7 +132,11 @@ describe('ComparePage failure scenario phases', () => {
     ['Two panels (adjacent)', 'two-adjacent', 2],
     ['All panels stuck (total failure)', 'all-stuck', 6],
   ])('phase 2: renders warning banner and per-config stuck counts for %s', async (optionLabel, scenarioKey, stuckLength) => {
-    render(<ComparePage />);
+    render(
+      <MemoryRouter>
+        <ComparePage />
+      </MemoryRouter>,
+    );
 
     selectScenario(optionLabel);
 
@@ -141,7 +150,11 @@ describe('ComparePage failure scenario phases', () => {
   });
 
   it('phase 3: displays the FAILURE MODE badge on angular velocity chart header only during anomalies', () => {
-    render(<ComparePage />);
+    render(
+      <MemoryRouter>
+        <ComparePage />
+      </MemoryRouter>,
+    );
 
     expect(screen.queryByText('FAILURE MODE')).not.toBeInTheDocument();
 
@@ -151,7 +164,11 @@ describe('ComparePage failure scenario phases', () => {
   });
 
   it('phase 4: renders the impact summary with per-config stuck, deployed, coupling, and progress severity', () => {
-    const { container } = render(<ComparePage />);
+    const { container } = render(
+      <MemoryRouter>
+        <ComparePage />
+      </MemoryRouter>,
+    );
 
     selectScenario('One panel stuck');
 

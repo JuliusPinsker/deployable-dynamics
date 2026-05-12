@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType } from '@/lib/physics/types';
+import { CONFIGURATIONS, DEFAULT_PARAMS, MATERIAL_PRESETS, type ConfigType } from '@/lib/physics/types';
 import { runFullSimulation, type SimulationFrame } from '@/lib/physics/engine';
 import {
   ChartContainer,
@@ -42,10 +43,14 @@ const FAILURE_SCENARIO_TEXT: Record<FailureAnomalyType, string> = {
 
 
 export default function ComparePage() {
+  const location = useLocation();
   const [stuckPanels, setStuckPanels] = useState<number[]>([]);
   const [anomaly, setAnomaly] = useState<AnomalyType>('none');
   const [betaAngle, setBetaAngle] = useState(0); // degrees, 0 = equatorial
   const [flexEnabled, setFlexEnabled] = useState(false);
+  const navPanelMass = (location.state as { panelMass?: number } | null)?.panelMass
+    ?? DEFAULT_PARAMS.panelMass;
+  const activeMaterial = MATERIAL_PRESETS.find(preset => preset.panelMass === navPanelMass)?.label ?? 'Custom';
 
   const stuckConfig = useMemo(() => {
     switch (anomaly) {
@@ -94,22 +99,29 @@ export default function ComparePage() {
   const allSimData = useMemo(() => {
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
     const results: Record<ConfigType, SimulationFrame[]> = {} as any;
+    const resolvedStuck = stuckConfig ?? [];
+    const resolvedFlex = flexEnabled ?? false;
+    const defaultShortEdgeDelays = DEFAULT_PARAMS.hinge.shortEdgeStartDelays ?? [0, 0, 0, 0];
+    const delaySeconds = defaultShortEdgeDelays[1] ?? 0;
     
     // Physics-driven mode: disable kinematic ramp to enable spring-damper + stop physics
     const physicsParams = {
       ...DEFAULT_PARAMS,
+      panelMass: navPanelMass,
       hinge: {
         ...DEFAULT_PARAMS.hinge,
         deployDuration: 0, // disables kinematic ramp; enables physics-driven motion
+        panelStartDelays: DEFAULT_PARAMS.hinge.panelStartDelays,
+        shortEdgeStartDelays: [0, delaySeconds, 0, delaySeconds],
       },
-      ...(flexEnabled ? { flex: DEFAULT_FLEX_PARAMS } : {}),
+      ...(resolvedFlex ? { flex: DEFAULT_FLEX_PARAMS } : {}),
     };
     
     for (const c of configs) {
-      results[c] = runFullSimulation(c, physicsParams, 8, stuckConfig);
+      results[c] = runFullSimulation(c, physicsParams, 8, resolvedStuck);
     }
     return results;
-  }, [stuckConfig, flexEnabled]);
+  }, [stuckConfig, flexEnabled, navPanelMass]);
 
   // Merge data for angular velocity chart
   const angVelData = useMemo(() => {
@@ -342,6 +354,7 @@ export default function ComparePage() {
             <p className="text-sm text-muted-foreground mt-1">
               Quantitative comparison of deployment dynamics across all 4 configurations
             </p>
+            <span className="text-sm text-muted-foreground">Material: {activeMaterial}</span>
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">

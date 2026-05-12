@@ -1,13 +1,14 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import TelemetryOverlay from '@/components/TelemetryOverlay';
+import { Vector3 } from 'three';
 import type { SpacecraftState } from '@/lib/physics/types';
 
 function makeState(overrides?: Partial<SpacecraftState>): SpacecraftState {
   return {
-    angularVelocity: { x: Math.PI, y: Math.PI / 2, z: 0 },
-    angularAcceleration: { x: 0, y: 0, z: 0 },
-    orientation: { x: 0, y: 0, z: 0 },
+    angularVelocity: new Vector3(Math.PI, Math.PI / 2, 0),
+    angularAcceleration: new Vector3(0, 0, 0),
+    orientation: new Vector3(0, 0, 0),
     time: 12.345,
     deploying: true,
     panels: [
@@ -43,6 +44,7 @@ describe('TelemetryOverlay', () => {
         eDetumbleMJ={0.456}
         delayMagnitude={0}
         delayUnit="ns"
+        materialLabel="FR4 PCB"
       />,
     );
 
@@ -80,7 +82,14 @@ describe('TelemetryOverlay', () => {
       ],
     });
 
-    render(<TelemetryOverlay state={state} delayMagnitude={0} delayUnit="ns" />);
+    render(
+      <TelemetryOverlay
+        state={state}
+        delayMagnitude={0}
+        delayUnit="ns"
+        materialLabel="FR4 PCB"
+      />,
+    );
     expect(screen.getByText('100%')).toBeInTheDocument();
   });
 
@@ -92,6 +101,7 @@ describe('TelemetryOverlay', () => {
         gravityGradientTorqueMag={2e-6}
         delayMagnitude={0}
         delayUnit="ns"
+        materialLabel="FR4 PCB"
       />,
     );
 
@@ -100,7 +110,14 @@ describe('TelemetryOverlay', () => {
 
   it('renders em dash for gravity gradient torque when absent', () => {
     const state = makeState();
-    render(<TelemetryOverlay state={state} delayMagnitude={0} delayUnit="ns" />);
+    render(
+      <TelemetryOverlay
+        state={state}
+        delayMagnitude={0}
+        delayUnit="ns"
+        materialLabel="FR4 PCB"
+      />,
+    );
 
     expect(screen.getByText('—')).toBeInTheDocument();
   });
@@ -137,6 +154,7 @@ describe('TelemetryOverlay', () => {
         panelLength={0.1}
         delayMagnitude={0}
         delayUnit="ns"
+        materialLabel="FR4 PCB"
       />,
     );
 

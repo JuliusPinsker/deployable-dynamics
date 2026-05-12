@@ -1,9 +1,9 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { CONFIGURATIONS } from '@/lib/physics/types';
+import { CONFIGURATIONS, MATERIAL_PRESETS, type MaterialPresetKey } from '@/lib/physics/types';
 import { ArrowRight, Orbit, BarChart3, Zap } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
@@ -12,6 +12,14 @@ const CONFIG_ICONS = ['◧', '◫', '⊞', '⊠'];
 
 export default function LandingPage() {
   const navigate = useNavigate();
+  const [selectedMaterial, setSelectedMaterial] = useState<MaterialPresetKey>('fr4');
+  const activeMaterial = useMemo(
+    () => MATERIAL_PRESETS.find(preset => preset.key === selectedMaterial)!,
+    [selectedMaterial],
+  );
+  const handleSimNavigation = (path: string) => {
+    navigate(path, { state: { panelMass: activeMaterial.panelMass } });
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -23,7 +31,16 @@ export default function LandingPage() {
         <div className="flex items-center gap-4">
           <nav className="flex gap-4 text-sm text-muted-foreground">
             <a href="/" className="text-foreground">Overview</a>
-            <a href="/simulate" className="hover:text-foreground transition-colors">Simulation</a>
+            <a
+              href="/simulate"
+              className="hover:text-foreground transition-colors"
+              onClick={event => {
+                event.preventDefault();
+                handleSimNavigation('/simulate');
+              }}
+            >
+              Simulation
+            </a>
             <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
           </nav>
           <ThemeToggle />
@@ -56,11 +73,47 @@ export default function LandingPage() {
             Compare four solar panel deployable configurations with real-time rigid body dynamics simulation.
             Explore deployment anomalies, angular momentum coupling, and impact forces.
           </p>
+          <div className="mt-8 max-w-3xl mx-auto">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground">Panel material</div>
+            <div
+              role="radiogroup"
+              aria-label="Panel material"
+              className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3"
+            >
+              {MATERIAL_PRESETS.map(preset => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={selectedMaterial === preset.key}
+                  onClick={() => setSelectedMaterial(preset.key)}
+                  className={`text-left rounded-lg border p-3 transition-colors ${
+                    selectedMaterial === preset.key
+                      ? 'border-primary bg-primary/10 text-foreground'
+                      : 'border-border bg-card/60 text-muted-foreground hover:border-primary/40 hover:text-foreground'
+                  }`}
+                >
+                  <div className="font-semibold text-sm">{preset.label}</div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    {preset.massGrams} g - {preset.description}
+                  </div>
+                  <div className="text-xs text-muted-foreground/70 mt-1 italic">
+                    {preset.example}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="flex gap-3 justify-center mt-8">
-            <Button size="lg" onClick={() => navigate('/simulate')} className="gap-2">
+            <Button size="lg" onClick={() => handleSimNavigation('/simulate')} className="gap-2">
               Launch Simulation <ArrowRight className="h-4 w-4" />
             </Button>
-            <Button size="lg" variant="outline" onClick={() => navigate('/compare')} className="gap-2">
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={() => navigate('/compare', { state: { panelMass: activeMaterial.panelMass } })}
+              className="gap-2"
+            >
               <BarChart3 className="h-4 w-4" /> Compare All
             </Button>
           </div>
@@ -79,7 +132,7 @@ export default function LandingPage() {
             >
               <Card
                 className="cursor-pointer hover:border-primary/40 transition-all group"
-                onClick={() => navigate(`/simulate?config=${config.id}`)}
+                onClick={() => handleSimNavigation(`/simulate?config=${config.id}`)}
               >
                 <CardContent className="p-5">
                   <div className="flex items-start gap-4">

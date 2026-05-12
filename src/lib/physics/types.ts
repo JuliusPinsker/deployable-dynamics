@@ -145,8 +145,46 @@ export const CONFIGURATIONS: ConfigInfo[] = [
   },
 ];
 
+export type MaterialPresetKey = 'fr4' | 'al-kapton' | 'cfrp';
+
+export interface MaterialPreset {
+  key: MaterialPresetKey;
+  label: string;
+  panelMass: number;        // kg per panel
+  description: string;      // one-line physics description
+  example: string;          // real mission example
+  massGrams: number;        // display value in grams
+}
+
+export const MATERIAL_PRESETS: MaterialPreset[] = [
+  {
+    key: 'fr4',
+    label: 'FR4 PCB',
+    panelMass: 0.032,
+    description: 'Standard fibreglass PCB substrate with GaAs cells',
+    example: 'GomSpace NanoPower P110 - GOMX-1, Aalto-1',
+    massGrams: 32,
+  },
+  {
+    key: 'al-kapton',
+    label: 'Al / Kapton Flex',
+    panelMass: 0.050,
+    description: 'Aluminium facesheet with Kapton flex circuit and Si cells',
+    example: 'JPL MarCO (2018), ISARA (2017)',
+    massGrams: 50,
+  },
+  {
+    key: 'cfrp',
+    label: 'CFRP Composite',
+    panelMass: 0.020,
+    description: 'Carbon fibre facesheet with GaAs cells - lightest option',
+    example: 'Planet Labs Dove, ESA OPS-SAT (2019)',
+    massGrams: 20,
+  },
+];
+
 export const DEFAULT_PARAMS: SimulationParams = {
-  panelMass: 0.3,
+  panelMass: 0.032,          // FR4 PCB substrate panel - GomSpace NanoPower P110 (32 g)
   // Panel dimensions for top-mounted cross configuration (X=right, Y=forward, Z=up)
   // Panel dimensions match CubeSat body for realistic proportions
   panelLength: 0.1,          // 0.1 m outward deployment length (matches body width/depth)

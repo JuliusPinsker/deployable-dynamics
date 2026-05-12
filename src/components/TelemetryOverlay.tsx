@@ -8,6 +8,7 @@ interface TelemetryOverlayProps {
   delayMagnitude: number;
   delayUnit: 'ns' | 'µs' | 'ms';
   panelLength?: number; // metres, for computing tip deflection in mm
+  materialLabel: string;
 }
 
 function formatNum(n: number, decimals = 3): string {
@@ -24,6 +25,7 @@ export default function TelemetryOverlay({
   eDetumbleMJ,
   delayMagnitude,
   delayUnit,
+  materialLabel,
   panelLength = 0.1, // default 0.1 m
 }: TelemetryOverlayProps) {
   const maxContact = Math.max(...state.panels.map(p => p.contactForce), 0);
@@ -103,6 +105,11 @@ export default function TelemetryOverlay({
         <span className="font-mono font-semibold" style={{ color: eDetumbleColor }}>
           {eDetumbleValue.toFixed(3)} mJ
         </span>
+      </div>
+
+      <div className="border-t border-border pt-1 flex justify-between">
+        <span className="text-muted-foreground">Panel material</span>
+        <span>{materialLabel}</span>
       </div>
 
       {/* Flexible panel tip deflection (if flex model active) */}

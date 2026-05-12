@@ -5,14 +5,9 @@ import { DEFAULT_PARAMS } from '../lib/physics/types';
 describe('sample simulation (3U)', () => {
   it('runs long-edge for 5s and logs summary', () => {
     const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 5);
-    console.log('--- simulation summary ---');
-    console.log('frames recorded:', frames.length);
     if (frames.length > 0) {
       const first = frames[0];
       const last = frames[frames.length - 1];
-      console.log('start time:', first.time, 's  end time:', last.time, 's');
-      console.log('final panel angles (deg):', last.panelAngles.map(a => (a * 180 / Math.PI).toFixed(1)).join(', '));
-      console.log('final total contact force (N):', last.totalContactForce.toFixed(3));
     }
 
     expect(frames.length).toBeGreaterThan(0);

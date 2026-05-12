@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import CubeSatViewer from '@/components/CubeSatViewer';
 import TelemetryOverlay from '@/components/TelemetryOverlay';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,15 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { CONFIGURATIONS, DEFAULT_PARAMS, type ConfigType, type SpacecraftState, type SimulationParams, Quaternion } from '@/lib/physics/types';
+import {
+  CONFIGURATIONS,
+  DEFAULT_PARAMS,
+  MATERIAL_PRESETS,
+  type ConfigType,
+  type SpacecraftState,
+  type SimulationParams,
+  Quaternion,
+} from '@/lib/physics/types';
 import { computeEDetumble, createInitialState, stepSimulation } from '@/lib/physics/engine';
 import { type ThermalParams, DEFAULT_THERMAL_PARAMS } from '@/lib/physics/thermalModel';
 import { type FlexParams, DEFAULT_FLEX_PARAMS } from '@/lib/physics/flexModel';
@@ -22,7 +30,11 @@ const UNIT_TO_SECONDS: Record<'ns' | 'µs' | 'ms', number> = {
 
 export default function SimulationPage() {
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const initialConfig = (searchParams.get('config') as ConfigType) || 'long-edge';
+  const navPanelMass = (location.state as { panelMass?: number } | null)?.panelMass
+    ?? DEFAULT_PARAMS.panelMass;
+  const materialLabel = MATERIAL_PRESETS.find(p => p.panelMass === navPanelMass)?.label ?? 'Custom';
 
   const [config, setConfig] = useState<ConfigType>(initialConfig);
   const [thermalEnabled, setThermalEnabled] = useState(false);
@@ -65,6 +77,7 @@ export default function SimulationPage() {
     const shortEdgeStartDelays: [number, number, number, number] = [0, delaySeconds, 0, delaySeconds];
     return {
       ...base,
+      panelMass: navPanelMass,
       hinge: {
         ...base.hinge,
         shortEdgeStartDelays,
@@ -72,7 +85,7 @@ export default function SimulationPage() {
       gravityGradientEnabled,
       ...(flexEnabled ? { flex: DEFAULT_FLEX_PARAMS } : {}),
     };
-  }, [thermalEnabled, gravityGradientEnabled, flexEnabled, delaySeconds]);
+  }, [thermalEnabled, gravityGradientEnabled, flexEnabled, delaySeconds, navPanelMass]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -292,6 +305,7 @@ export default function SimulationPage() {
             )}
             delayMagnitude={delayMagnitude}
             delayUnit={delayUnit}
+            materialLabel={materialLabel}
           />
 
           {thermalEnabled && (
