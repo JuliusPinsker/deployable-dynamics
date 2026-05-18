@@ -11,15 +11,19 @@
 
 import {
   type ConfigType,
+  type FailureModeKey,
+  type MaterialPresetKey,
   type SimulationParams,
   type SpacecraftState,
   type PanelState,
   type ThermalParams,
   type FlexParams,
+  CONFIGURATIONS,
   Vector3,
   Quaternion,
   Euler,
   DEFAULT_PARAMS,
+  MATERIAL_PRESETS,
 } from './types';
 import { MathUtils } from 'three';
 
@@ -1166,4 +1170,97 @@ export function runFullSimulation(
   }
 
   return frames;
+}
+
+export interface ReportRow {
+  config: ConfigType;
+  failureMode: FailureModeKey;
+  material: MaterialPresetKey;
+  materialLabel: string;
+  panelMass: number;           // kg
+  attitudeCouplingDeg: number; // final
+  eDetumbleMJ: number;         // final (mJ)
+  maxAngularVelocityDeg: number;
+  comOffsetMm: number;
+  deploymentTimeS: number;
+}
+
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+export function computeReportData(
+  config: ConfigType,
+  failureMode: FailureModeKey,
+  materialKey: MaterialPresetKey,
+): ReportRow {
+  const panelCount = CONFIGURATIONS.find(entry => entry.id === config)?.panelCount ?? 0;
+  const allStuck = Array.from({ length: panelCount }, (_, index) => index);
+  const stuckMap: Record<FailureModeKey, number[]> = {
+    none: [],
+    'one-stuck': [0],
+    'two-opposite':
+      config === 'long-edge' || config === 'double-long-edge'
+        ? [0, 1]
+        : [0, 2],
+    'all-stuck': allStuck,
+  };
+
+  const material = MATERIAL_PRESETS.find(preset => preset.key === materialKey);
+  if (!material) {
+    throw new Error(`Unknown material preset: ${materialKey}`);
+  }
+
+  const params: SimulationParams = {
+    ...DEFAULT_PARAMS,
+    panelMass: material.panelMass,
+    hinge: {
+      ...DEFAULT_PARAMS.hinge,
+      deployDuration: 2,
+    },
+  };
+
+  const frames = runFullSimulation(config, params, 8, stuckMap[failureMode]);
+  const last = frames.at(-1);
+  const maxAngularVelocityDeg = frames.length
+    ? Math.max(
+        ...frames.map(frame =>
+          MathUtils.radToDeg(
+            new Vector3(
+              frame.angularVelocity.x,
+              frame.angularVelocity.y,
+              frame.angularVelocity.z,
+            ).length(),
+          ),
+        ),
+      )
+    : 0;
+
+  let comOffsetMm = 0;
+  try {
+    const state = createInitialState(config, params.thermal, params.flex);
+    const stuckSet = new Set(stuckMap[failureMode]);
+    state.panels = state.panels.map((panel, index) => ({
+      ...panel,
+      stuck: stuckSet.has(index),
+      stuckAngle: stuckSet.has(index) ? 0 : panel.stuckAngle,
+      angle: last?.panelAngles?.[index] ?? panel.angle,
+    }));
+    comOffsetMm = computeSystemCoM(state, config, params).offsetMm;
+  } catch {
+    comOffsetMm = 0;
+  }
+
+  return {
+    config,
+    failureMode,
+    material: materialKey,
+    materialLabel: material.label,
+    panelMass: material.panelMass,
+    attitudeCouplingDeg: round3(last?.attitudeCouplingDeg ?? 0),
+    eDetumbleMJ: round3(last?.eDetumble ?? 0),
+    maxAngularVelocityDeg: round3(maxAngularVelocityDeg),
+    comOffsetMm: round3(comOffsetMm),
+    deploymentTimeS: round3(last?.time ?? 0),
+  };
 }

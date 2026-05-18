@@ -3,18 +3,24 @@ import {
   computeEDetumble,
   computeTotalAngularMomentum,
   computeSystemCoM,
+  computeReportData,
   createInitialState,
   stepSimulation,
   runFullSimulation,
 } from '../lib/physics/engine';
-import { DEFAULT_PARAMS, Vector3, Quaternion } from '../lib/physics/types';
+import { DEFAULT_PARAMS, MATERIAL_PRESETS, Vector3, Quaternion } from '../lib/physics/types';
 import type { SimulationParams, SpacecraftState } from '../lib/physics/types';
+import { MathUtils } from 'three';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helper: vector magnitude
 // ─────────────────────────────────────────────────────────────────────────────
 function v3Mag(v: Vector3): number {
   return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,5 +244,59 @@ describe('computeSystemCoM', () => {
 
     const com = computeSystemCoM(state, 'short-edge', DEFAULT_PARAMS);
     expect(com.offsetMm).toBeLessThan(0.1);
+  });
+});
+
+describe('computeReportData', () => {
+  it('matches simulation metrics for a baseline scenario', () => {
+    const config = 'long-edge' as const;
+    const failureMode = 'none' as const;
+    const materialKey = 'fr4' as const;
+    const material = MATERIAL_PRESETS.find(preset => preset.key === materialKey)!;
+
+    const params: SimulationParams = {
+      ...DEFAULT_PARAMS,
+      panelMass: material.panelMass,
+      hinge: {
+        ...DEFAULT_PARAMS.hinge,
+        deployDuration: 2,
+      },
+    };
+
+    const frames = runFullSimulation(config, params, 8, []);
+    const last = frames.at(-1);
+    const maxAngularVelocityDeg = frames.length
+      ? Math.max(
+          ...frames.map(frame =>
+            MathUtils.radToDeg(
+              new Vector3(
+                frame.angularVelocity.x,
+                frame.angularVelocity.y,
+                frame.angularVelocity.z,
+              ).length(),
+            ),
+          ),
+        )
+      : 0;
+
+    const state = createInitialState(config, params.thermal, params.flex);
+    state.panels = state.panels.map((panel, index) => ({
+      ...panel,
+      angle: last?.panelAngles?.[index] ?? panel.angle,
+    }));
+    const com = computeSystemCoM(state, config, params);
+
+    const row = computeReportData(config, failureMode, materialKey);
+
+    expect(row.config).toBe(config);
+    expect(row.failureMode).toBe(failureMode);
+    expect(row.material).toBe(materialKey);
+    expect(row.materialLabel).toBe(material.label);
+    expect(row.panelMass).toBe(material.panelMass);
+    expect(row.attitudeCouplingDeg).toBe(round3(last?.attitudeCouplingDeg ?? 0));
+    expect(row.eDetumbleMJ).toBe(round3(last?.eDetumble ?? 0));
+    expect(row.maxAngularVelocityDeg).toBe(round3(maxAngularVelocityDeg));
+    expect(row.comOffsetMm).toBe(round3(com.offsetMm));
+    expect(row.deploymentTimeS).toBe(round3(last?.time ?? 0));
   });
 });

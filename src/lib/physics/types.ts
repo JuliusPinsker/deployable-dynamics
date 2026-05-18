@@ -101,6 +101,8 @@ export type ConfigType =
   | 'short-edge'
   | 'short-edge-long-edge';
 
+export type FailureModeKey = 'none' | 'one-stuck' | 'two-opposite' | 'all-stuck';
+
 export interface ConfigInfo {
   id: ConfigType;
   name: string;

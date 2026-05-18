@@ -42,6 +42,7 @@ export default function LandingPage() {
               Simulation
             </a>
             <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
+            <a href="/report" className="hover:text-foreground transition-colors">Report</a>
           </nav>
           <ThemeToggle />
         </div>

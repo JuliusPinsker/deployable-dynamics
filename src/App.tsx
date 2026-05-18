@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import LandingPage from "./pages/LandingPage";
 import SimulationPage from "./pages/SimulationPage";
 import ComparePage from "./pages/ComparePage";
+import ReportPage from "./pages/ReportPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -23,6 +24,7 @@ const App = () => (
             <Route path="/" element={<LandingPage />} />
             <Route path="/simulate" element={<SimulationPage />} />
             <Route path="/compare" element={<ComparePage />} />
+            <Route path="/report" element={<ReportPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </div>
