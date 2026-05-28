@@ -41,7 +41,7 @@ export default function SimulationPage() {
   const [flexEnabled, setFlexEnabled] = useState(false);
   const [gravityGradientEnabled, setGravityGradientEnabled] = useState(true);
   const [thermalParams, setThermalParams] = useState<ThermalParams>(DEFAULT_THERMAL_PARAMS);
-  const [state, setState] = useState<SpacecraftState>(() => 
+  const [state, setState] = useState<SpacecraftState>(() =>
     createInitialState(config, thermalEnabled ? thermalParams : undefined, flexEnabled ? DEFAULT_FLEX_PARAMS : undefined)
   );
   const [speed, setSpeed] = useState(1);
@@ -106,7 +106,7 @@ export default function SimulationPage() {
   const animate = useCallback(() => {
     const st = stateRef.current;
     const currentParams = paramsRef.current;
-    
+
     if (st.deploying) {
       // Normal deployment physics loop
       const stepsPerFrame = Math.max(1, Math.round(speedRef.current));
@@ -153,19 +153,13 @@ export default function SimulationPage() {
     } else {
       return;
     }
-    
+
     rafRef.current = requestAnimationFrame(animate);
   }, [params]);
 
   const handleDeploy = useCallback(() => {
-    if (state.deploying) {
-      cancelAnimationFrame(rafRef.current);
-      setState(s => ({ ...s, deploying: false }));
-    } else {
-      setState(s => ({ ...s, deploying: true }));
-      rafRef.current = requestAnimationFrame(animate);
-    }
-  }, [state.deploying, animate]);
+    setState(s => ({ ...s, deploying: !s.deploying }));
+  }, []);
 
   const handlePanelClick = useCallback((index: number) => {
     setState(s => {
@@ -250,6 +244,12 @@ export default function SimulationPage() {
   useEffect(() => {
     return () => cancelAnimationFrame(rafRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!state.deploying) return;
+    rafRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [state.deploying, animate]);
 
   // Start background thermal animation when enabled
   useEffect(() => {

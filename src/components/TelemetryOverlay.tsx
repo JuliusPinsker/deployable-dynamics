@@ -16,7 +16,17 @@ function formatNum(n: number, decimals = 3): string {
 }
 
 function toDegPerSec(rad: number): string {
-  return formatNum((rad * 180) / Math.PI, 2);
+  const deg = (rad * 180) / Math.PI;
+  const absDeg = Math.abs(deg);
+  const safeDeg = Object.is(deg, -0) ? 0 : deg;
+
+  if (absDeg < 0.01) {
+    return `${safeDeg.toExponential(2)}°/s`;
+  }
+  if (absDeg < 0.1) {
+    return `${safeDeg.toFixed(4)}°/s`;
+  }
+  return `${safeDeg.toFixed(2)}°/s`;
 }
 
 export default function TelemetryOverlay({
@@ -61,15 +71,15 @@ export default function TelemetryOverlay({
       <div className="space-y-1">
         <div className="flex justify-between">
           <span className="text-muted-foreground">ωx</span>
-          <span className="text-primary">{toDegPerSec(state.angularVelocity.x)}°/s</span>
+          <span className="text-primary">{toDegPerSec(state.angularVelocity.x)}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-muted-foreground">ωy</span>
-          <span className="text-accent">{toDegPerSec(state.angularVelocity.y)}°/s</span>
+          <span className="text-accent">{toDegPerSec(state.angularVelocity.y)}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-muted-foreground">ωz</span>
-          <span className="text-config-4">{toDegPerSec(state.angularVelocity.z)}°/s</span>
+          <span className="text-config-4">{toDegPerSec(state.angularVelocity.z)}</span>
         </div>
       </div>
 
