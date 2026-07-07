@@ -691,6 +691,11 @@ export function stepSimulation(
     const panelStage = spec.stage ?? 1;
     const panelMaxAngle = spec.maxAngle ?? params.hinge.stopAngle;
     const panelStartDelay = (() => {
+      // General per-panel delays — authoritative source, applies to ALL configs.
+      const generalDelay = params.hinge.panelStartDelays?.[i];
+      if (generalDelay !== undefined) return generalDelay;
+
+      // Legacy short-edge-specific delays (retained for backward compatibility).
       if (config === 'short-edge') {
         return params.hinge.shortEdgeStartDelays?.[i] ?? 0;
       }
@@ -779,31 +784,41 @@ export function stepSimulation(
         tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
       }
 
-      // Viscous damping and Coulomb friction (common to both models)
-      tau -= h.dampingCoeff * omegaRel;
-      tau -= Math.sign(omegaRel) * h.frictionCoeff;
-
-      // Mechanical stop at panel's max angle
-      let tContact = 0;
+      // ── Split conservative torque from linear (velocity-proportional) damping ──
+      // Conservative part (position-dependent): spring/bistable + preload, plus the
+      // stop's elastic term. Linear damping (hinge + stop) is folded into c_total and
+      // applied implicitly below. Coulomb friction keeps the old-ω sign (semi-implicit).
+      let tauCons = tau;                    // base spring/bistable + preload (from above)
+      let cTotal = h.dampingCoeff;          // viscous hinge damping coefficient
+      let penetration = 0;
       if (theta >= stopAngle) {
-        const penetration = theta - stopAngle;
-        tContact = -h.stopStiffness * penetration - h.stopDamping * omegaRel;
-        tau += tContact;
+        penetration = theta - stopAngle;
+        tauCons -= h.stopStiffness * penetration;   // elastic mechanical stop
+        cTotal += h.stopDamping;                    // stop damping (linear in ω)
       }
+      const friction = Math.sign(omegaRel) * h.frictionCoeff;
 
-      hingeTorque = tau;
-      contactForceNew = Math.abs(tContact);
+      // Effective inverse inertia about the hinge axis:  κ = â · I_world⁻¹ · â
+      const kappa = applyInverseInertia(Ip, qPanel, aWorld).dot(aWorld);
 
-      // Full 3D panel angular acceleration:  α_panel = I_panel_world⁻¹ · (τ · â_world)
-      const tauVecWorld = aWorld.clone().multiplyScalar(tau);
-      const alphaPanelWorld = applyInverseInertia(Ip, qPanel, tauVecWorld);
-
-      // Project onto hinge axis for 1-DOF constraint:  θ̈ = α_panel · â
-      thetaDDot = alphaPanelWorld.dot(aWorld);
-
-      // Semi-implicit Euler (velocity first)
-      omegaRelNew = omegaRel + thetaDDot * dt;
+      // Backward-Euler (implicit) treatment of the linear damping term makes the panel
+      // integration unconditionally stable — removing the explicit dt·(c/I) < 2 limit
+      // that caused overdamped hinges to overshoot/limit-cycle instead of deploying:
+      //   I·θ̈ = τ_cons − c_total·ω − friction
+      //   ω_new = (ω + dt·κ·(τ_cons − friction)) / (1 + dt·κ·c_total)
+      omegaRelNew = (omegaRel + dt * kappa * (tauCons - friction)) / (1 + dt * kappa * cTotal);
       thetaNew = theta + omegaRelNew * dt;
+
+      // Total hinge torque actually applied this step (damping uses the implicit ω_new),
+      // used for the equal-and-opposite body reaction below and flex forcing.
+      hingeTorque = tauCons - cTotal * omegaRelNew - friction;
+      thetaDDot = (omegaRelNew - omegaRel) / dt;
+
+      // Stop contact force magnitude (elastic + damping parts) for telemetry.
+      const tContact = penetration > 0
+        ? -h.stopStiffness * penetration - h.stopDamping * omegaRelNew
+        : 0;
+      contactForceNew = Math.abs(tContact);
 
       if (thetaNew < 0) { thetaNew = 0; omegaRelNew = 0; }
       deployedNew = thetaNew >= stopAngle && Math.abs(omegaRelNew) < 0.1;
@@ -938,25 +953,12 @@ export function stepSimulation(
     }
   }
 
-  // Step 2e: Apply conservation-derived ω as correction (prevents drift)
-  // Use conserved ω for body dynamics when in free-float (τ_external ≈ 0)
-  // For gravity gradient or other external torques, blend RK4 and conserved values
-  const hasExternalTorque = params.gravityGradientEnabled !== false;
-  let qBodyNew: Quaternion;
-  let omegaBodyNew: Vector3;
-
-  if (!hasExternalTorque || H0mag < 1e-9) {
-    // Pure free-float: use conservation-derived ω directly
-    qBodyNew = qBodyRK4;
-    omegaBodyNew = omegaConservedWorld;
-  } else {
-    // With external torque: use RK4 but apply small conservation correction
-    // to prevent cumulative drift from panel momentum exchange
-    // Blend: 90% RK4 (captures external torque) + 10% conservation correction
-    const blendFactor = 0.1;
-    qBodyNew = qBodyRK4;
-    omegaBodyNew = omegaBodyRK4.clone().add(deltaOmega.clone().multiplyScalar(blendFactor));
-  }
+  // ── Step 2e: Apply conservation-derived ω ────────────────────────────────
+  // Gravity-gradient torque (~1e-6 N·m) is four orders of magnitude smaller than
+  // hinge spring torques (~0.02 N·m) on deployment timescales (Hughes 1986 §3.4);
+  // conservation must hold exactly for internal forces. No blending.
+  const qBodyNew: Quaternion = qBodyRK4;
+  const omegaBodyNew: Vector3 = omegaConservedWorld;
 
   // Approximate angular acceleration from finite difference (for telemetry)
   const alphaWorld = omegaBodyNew.clone().sub(omegaBody).multiplyScalar(1 / dt);
@@ -997,7 +999,7 @@ export function stepSimulation(
   const euler = new Vector3(e.x, e.y, e.z);
   const allDeployed = newPanels.every(p => p.deployed || p.stuck);
 
-  return {
+  const newState: SpacecraftState = {
     angularVelocity: omegaBodyNew,
     angularAcceleration: alphaWorld,
     orientation: euler,
@@ -1009,6 +1011,11 @@ export function stepSimulation(
     thermalParams,
     flexState: newFlexState,
   };
+
+  // Compute the composite system CoM for the newly assembled state so the
+  // viewer can rotate the body about its true CoM, not its geometric centre.
+  const { comBody } = computeSystemCoM(newState, config, params);
+  return { ...newState, comBody };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

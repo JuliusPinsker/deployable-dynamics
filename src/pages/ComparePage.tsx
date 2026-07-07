@@ -31,6 +31,12 @@ const chartConfig: ChartConfig = {
 
 const COLORS = ['hsl(210, 100%, 55%)', 'hsl(168, 70%, 45%)', 'hsl(35, 95%, 55%)', 'hsl(280, 65%, 55%)'];
 
+const UNIT_TO_SECONDS: Record<'ns' | 'µs' | 'ms', number> = {
+  ns: 1e-9,
+  µs: 1e-6,
+  ms: 1e-3,
+};
+
 type AnomalyType = 'none' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck';
 type FailureAnomalyType = Exclude<AnomalyType, 'none'>;
 
@@ -46,8 +52,15 @@ export default function ComparePage() {
   const location = useLocation();
   const [stuckPanels, setStuckPanels] = useState<number[]>([]);
   const [anomaly, setAnomaly] = useState<AnomalyType>('none');
-  const [betaAngle, setBetaAngle] = useState(0); // degrees, 0 = equatorial
   const [flexEnabled, setFlexEnabled] = useState(false);
+  const [delayMagnitude, setDelayMagnitude] = useState<number>(0);
+  const [delayUnit, setDelayUnit] = useState<'ns' | 'µs' | 'ms'>('µs');
+  const delaySeconds = delayMagnitude * UNIT_TO_SECONDS[delayUnit];
+  const delayPresets = [
+    { label: 'Ideal (0 ns)', magnitude: 0, unit: 'ns' },
+    { label: 'Nominal (250 µs)', magnitude: 250, unit: 'µs' },
+    { label: 'Worst-case (5 ms)', magnitude: 5, unit: 'ms' },
+  ] as const;
   const navPanelMass = (location.state as { panelMass?: number } | null)?.panelMass
     ?? DEFAULT_PARAMS.panelMass;
   const activeMaterial = MATERIAL_PRESETS.find(preset => preset.panelMass === navPanelMass)?.label ?? 'Custom';
@@ -101,27 +114,34 @@ export default function ComparePage() {
     const results: Record<ConfigType, SimulationFrame[]> = {} as any;
     const resolvedStuck = stuckConfig ?? [];
     const resolvedFlex = flexEnabled ?? false;
-    const defaultShortEdgeDelays = DEFAULT_PARAMS.hinge.shortEdgeStartDelays ?? [0, 0, 0, 0];
-    const delaySeconds = defaultShortEdgeDelays[1] ?? 0;
-    
-    // Physics-driven mode: disable kinematic ramp to enable spring-damper + stop physics
-    const physicsParams = {
-      ...DEFAULT_PARAMS,
-      panelMass: navPanelMass,
-      hinge: {
-        ...DEFAULT_PARAMS.hinge,
-        deployDuration: 0, // disables kinematic ramp; enables physics-driven motion
-        panelStartDelays: DEFAULT_PARAMS.hinge.panelStartDelays,
-        shortEdgeStartDelays: [0, delaySeconds, 0, delaySeconds],
-      },
-      ...(resolvedFlex ? { flex: DEFAULT_FLEX_PARAMS } : {}),
-    };
-    
+
     for (const c of configs) {
-      results[c] = runFullSimulation(c, physicsParams, 8, resolvedStuck);
+      // Sequential burn-wire release: panel i fires at i × δt (Bug 3), per config's panel count.
+      // Deployment uses the kinematic-staging default (Bug 4: deployDuration = 0.4s) inherited from
+      // DEFAULT_PARAMS.hinge — the only model that settles in ~0.4s and makes δt coupling visible.
+      const panelCount = CONFIGURATIONS.find(cfg => cfg.id === c)?.panelCount ?? 2;
+      const panelStartDelays = Array.from({ length: panelCount }, (_, i) => i * delaySeconds);
+      const params = {
+        ...DEFAULT_PARAMS,
+        panelMass: navPanelMass,
+        hinge: {
+          ...DEFAULT_PARAMS.hinge,
+          panelStartDelays,
+        },
+        ...(resolvedFlex ? { flex: DEFAULT_FLEX_PARAMS } : {}),
+      };
+      const frames = runFullSimulation(c, params, 2, resolvedStuck);
+      // stepSimulation freezes state.time once deployment ends (engine caps the early-exit at
+      // time > 0.5s), padding the series with duplicate-time frames that make the shared chart
+      // x-axis non-monotonic. Trim the frozen tail so each config ends at its true settle time.
+      let cut = frames.length;
+      for (let k = 1; k < frames.length; k++) {
+        if (frames[k].time <= frames[k - 1].time) { cut = k; break; }
+      }
+      results[c] = frames.slice(0, cut);
     }
     return results;
-  }, [stuckConfig, flexEnabled, navPanelMass]);
+  }, [stuckConfig, flexEnabled, navPanelMass, delaySeconds]);
 
   // Merge data for angular velocity chart
   const angVelData = useMemo(() => {
@@ -184,23 +204,6 @@ export default function ComparePage() {
     });
   }, [allSimData]);
 
-  // Impact force data
-  const impactData = useMemo(() => {
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    return configs.map((c, i) => {
-      const frames = allSimData[c];
-      let peakForce = 0;
-      for (const f of frames) {
-        peakForce = Math.max(peakForce, f.totalContactForce);
-      }
-      return {
-        name: CONFIGURATIONS[i].shortName,
-        value: Number(peakForce.toFixed(1)),
-        fill: COLORS[i],
-      };
-    });
-  }, [allSimData]);
-
   // Deployment time
   const deployTimeData = useMemo(() => {
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
@@ -210,25 +213,6 @@ export default function ComparePage() {
       return {
         name: CONFIGURATIONS[i].shortName,
         value: Number((lastFrame?.time || 0).toFixed(2)),
-        fill: COLORS[i],
-      };
-    });
-  }, [allSimData]);
-
-  // Gravity gradient disturbance torque
-  const ggTorqueData = useMemo(() => {
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    return configs.map((c, i) => {
-      const frames = allSimData[c];
-      let maxGG = 0;
-      for (const f of frames) {
-        if (f.gravityGradientTorqueMag !== undefined && f.gravityGradientTorqueMag > maxGG) {
-          maxGG = f.gravityGradientTorqueMag;
-        }
-      }
-      return {
-        name: CONFIGURATIONS[i].shortName,
-        value: Number((maxGG * 1e6).toFixed(4)), // convert to µN·m
         fill: COLORS[i],
       };
     });
@@ -255,81 +239,6 @@ export default function ComparePage() {
     }
     return data.length > 0 ? data : null;
   }, [allSimData, flexEnabled]);
-
-  // Thermal comparison: radiation-balance model with per-config panel area differentiation
-  const thermalComparisonData = useMemo(() => {
-    // Physical constants (SI)
-    const SOLAR_CONSTANT = 1361;   // W/m² — solar irradiance at 1 AU
-    const EARTH_IR = 237;          // W/m² — Earth IR emission
-    const ALBEDO = 0.3;            // Earth albedo factor
-    const STEFAN = 5.67e-8;        // Stefan-Boltzmann constant
-
-    // Per-configuration physical properties
-    // area_m2: total solar panel area in m²
-    // mass_kg: panel assembly mass (more panels = more thermal mass)
-    const configProps = {
-      'long-edge':           { area_m2: 0.006,  mass_kg: 0.08, panelCount: 2 },
-      'double-long-edge':    { area_m2: 0.012,  mass_kg: 0.16, panelCount: 4 },
-      'short-edge':          { area_m2: 0.002,  mass_kg: 0.04, panelCount: 2 },
-      'short-edge-long-edge':{ area_m2: 0.009,  mass_kg: 0.12, panelCount: 3 },
-    };
-
-    // GaAs solar cell optical properties (space-grade)
-    const alpha_solar = 0.92;   // solar absorptivity
-    const epsilon_ir  = 0.85;   // IR emissivity
-
-    // Beta angle effect: eclipse fraction and sunlight factor
-    const betaRad = Math.abs(betaAngle) * Math.PI / 180;
-    // At beta=0 → eclipseFraction≈0.36 (36% in shadow), at beta=75° → ~0% eclipse
-    const eclipseFraction = Math.max(0, 0.36 * Math.cos(betaRad));
-    const sunFraction = 1 - eclipseFraction;
-    // Effective cosine factor for solar incidence averaged over sunlit arc
-    const cosSun = Math.cos(betaRad) * 0.637; // mean cosine over illuminated half-orbit
-
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-
-    return configs.map((c, i) => {
-      const { area_m2, mass_kg } = configProps[c];
-
-      // Radiative equilibrium temperature (sunlit):
-      // alpha * G_eff * A = epsilon * sigma * A * T^4
-      // G_eff = SOLAR_CONSTANT * cosSun * sunFraction + EARTH_IR * eclipseFraction * 0.5 + ALBEDO * SOLAR_CONSTANT * 0.1
-      const G_solar   = SOLAR_CONSTANT * cosSun * sunFraction;
-      const G_earthIR = EARTH_IR * eclipseFraction * 0.5;
-      const G_albedo  = ALBEDO * SOLAR_CONSTANT * 0.12;
-      const G_eff     = alpha_solar * (G_solar + G_albedo) + G_earthIR * epsilon_ir;
-
-      // Equilibrium: G_eff = epsilon * sigma * T^4  →  T = (G_eff / (epsilon * sigma))^0.25
-      const T_eq_sunlit_K = Math.pow(G_eff / (epsilon_ir * STEFAN), 0.25);
-      const T_eq_sunlit_C = T_eq_sunlit_K - 273.15;
-
-      // Eclipse equilibrium (no solar input, just Earth IR + radiation to deep space)
-      const G_eclipse = epsilon_ir * EARTH_IR * 0.5;
-      const T_eq_eclipse_K = Math.pow(G_eclipse / (epsilon_ir * STEFAN), 0.25);
-      const T_eq_eclipse_C = T_eq_eclipse_K - 273.15;
-
-      // Thermal mass effect: larger panel assemblies lag more → peak is slightly lower
-      // Cp_steel ≈ 500 J/(kg·K), orbit period ≈ 5520 s
-      const thermalTimeConst = mass_kg * 500 / (epsilon_ir * STEFAN * 4 * T_eq_sunlit_K ** 3 * area_m2);
-      const lagFactor = 1 - Math.exp(-2700 / Math.max(thermalTimeConst, 300)); // sunlit arc ~2700 s
-      const peakTemp_C = T_eq_eclipse_C + (T_eq_sunlit_C - T_eq_eclipse_C) * lagFactor;
-
-      // Spring stiffness: k(T)/k0 = 1 - alpha_E * (T - T_ref)
-      // alpha_E = 3e-4 K^-1, T_ref = 20°C, clamped [0.85, 1.15]
-      const ALPHA_E = 3e-4;
-      const T_ref = 20;
-      const stiffnessRaw = 1.0 - ALPHA_E * (peakTemp_C - T_ref);
-      const stiffnessPct = Math.round(Math.min(Math.max(stiffnessRaw, 0.85), 1.15) * 100);
-
-      return {
-        name: CONFIGURATIONS[i].shortName,
-        peakTemp: Math.round(peakTemp_C),
-        stiffnessPct,
-        eclipseTemp: Math.round(T_eq_eclipse_C),
-        fill: COLORS[i],
-      };
-    });
-  }, [betaAngle]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -393,6 +302,57 @@ export default function ComparePage() {
             </div>
           </div>
         )}
+
+        {/* Timing-coupling controls (Bugs 3 & 4) */}
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-3 rounded-lg border border-border bg-card px-4 py-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Timing Discrepancy δt</Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={delayMagnitude}
+                onChange={e => setDelayMagnitude(Math.max(0, Number(e.target.value)))}
+                className="w-20 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+              />
+              <div className="flex items-center gap-1">
+                {(['ns', 'µs', 'ms'] as const).map(unit => (
+                  <button
+                    key={unit}
+                    type="button"
+                    onClick={() => setDelayUnit(unit)}
+                    aria-pressed={delayUnit === unit}
+                    className={`px-2 py-1 rounded-md text-[10px] border transition-colors ${
+                      delayUnit === unit
+                        ? 'border-primary bg-primary/10 text-foreground'
+                        : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
+                    }`}
+                  >
+                    {unit}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {delayPresets.map(preset => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => { setDelayMagnitude(preset.magnitude); setDelayUnit(preset.unit); }}
+                  className="rounded-md border border-border bg-secondary/50 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground hover:bg-secondary"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="text-[11px] text-muted-foreground max-w-md">
+            δt staggers burn-wire release (panel i fires at i·δt): at δt = 0 the panel-pair
+            reactions cancel and the body stays at rest; at δt &gt; 0 the symmetry breaks and the
+            body gains angular velocity. Panels deploy over the {DEFAULT_PARAMS.hinge.deployDuration}s default.
+          </p>
+        </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Tip Deflection chart (only when flex model active) */}
@@ -514,24 +474,6 @@ export default function ComparePage() {
             </CardContent>
           </Card>
 
-          {/* Impact Force */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Peak Contact Force at Stop (N)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={chartConfig} className="h-[250px]">
-                <BarChart data={impactData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="value" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-
           {/* Deployment Time */}
           <Card>
             <CardHeader>
@@ -543,27 +485,6 @@ export default function ComparePage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="name" tick={{ fontSize: 10 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="value" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-
-          {/* Gravity Gradient Disturbance Torque */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Peak Gravity Gradient Disturbance (µN·m)</CardTitle>
-              <p className="text-xs text-muted-foreground mt-1">
-                τ_gg = (3μ/R³)(I_z − I_y)r̂_y·r̂_z — varies by config inertia distribution
-              </p>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={chartConfig} className="h-[250px]">
-                <BarChart data={ggTorqueData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'µN·m', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
                   <ChartTooltip content={<ChartTooltipContent />} />
                   <Bar dataKey="value" radius={[4, 4, 0, 0]} />
                 </BarChart>
@@ -584,18 +505,16 @@ export default function ComparePage() {
                       <th className="text-left py-2 text-muted-foreground font-medium">Config</th>
                       <th className="text-right py-2 text-muted-foreground font-medium">Panels</th>
                       <th className="text-right py-2 text-muted-foreground font-medium">Peak ω (°/s)</th>
-                      <th className="text-right py-2 text-muted-foreground font-medium">Peak F (N)</th>
                       <th className="text-right py-2 text-muted-foreground font-medium">T_deploy (s)</th>
                     </tr>
                   </thead>
                   <tbody>
                     {CONFIGURATIONS.map((c, i) => {
                       const frames = allSimData[c.id];
-                      let peakOmega = 0, peakForce = 0;
+                      let peakOmega = 0;
                       for (const f of frames) {
                         const omega = Math.sqrt(f.angularVelocity.x ** 2 + f.angularVelocity.y ** 2 + f.angularVelocity.z ** 2);
                         peakOmega = Math.max(peakOmega, omega);
-                        peakForce = Math.max(peakForce, f.totalContactForce);
                       }
                       const lastT = frames[frames.length - 1]?.time || 0;
                       return (
@@ -606,7 +525,6 @@ export default function ComparePage() {
                           </td>
                           <td className="text-right py-2 font-mono">{c.panelCount}</td>
                           <td className="text-right py-2 font-mono">{((peakOmega * 180) / Math.PI).toFixed(2)}</td>
-                          <td className="text-right py-2 font-mono">{peakForce.toFixed(1)}</td>
                           <td className="text-right py-2 font-mono">{lastT.toFixed(2)}</td>
                         </tr>
                       );
@@ -614,62 +532,6 @@ export default function ComparePage() {
                   </tbody>
                 </table>
               </div>
-            </CardContent>
-          </Card>
-
-          {/* Thermal Environment Impact */}
-          <Card className="col-span-1 lg:col-span-2">
-            <CardHeader>
-              <div className="flex items-center justify-between flex-wrap gap-3">
-                <div>
-                  <CardTitle className="text-sm font-semibold">
-                    Thermal Environment Impact on Deployment Spring Stiffness
-                  </CardTitle>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Radiative equilibrium model — GaAs panels, 400 km LEO orbit (α=0.92, ε=0.85)
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground whitespace-nowrap">Solar Beta Angle:</span>
-                  <input
-                    type="range"
-                    min={-75}
-                    max={75}
-                    step={5}
-                    value={betaAngle}
-                    onChange={e => setBetaAngle(Number(e.target.value))}
-                    className="w-36"
-                  />
-                  <span className="text-xs font-mono w-12 text-right">{betaAngle}°</span>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={chartConfig} className="h-[250px]">
-                <BarChart data={thermalComparisonData} layout="vertical" margin={{ left: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} label={{ value: 'Peak Panel Temp (°C) / Stiffness Change (%)', position: 'insideBottom', offset: -5, style: { fontSize: 11 } }} />
-                  <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={60} />
-                  <ChartTooltip
-                    content={({ active, payload }) => {
-                      if (active && payload && payload.length) {
-                        const data = payload[0].payload;
-                        return (
-                          <div className="p-2 text-xs bg-background/90 border rounded-md shadow-lg">
-                            <p className="font-bold">{data.name}</p>
-                            <p>Peak Temp: {data.peakTemp}°C</p>
-                            <p>Eclipse Temp: {data.eclipseTemp}°C</p>
-                            <p>Stiffness: {data.stiffnessPct}%</p>
-                          </div>
-                        );
-                      }
-                      return null;
-                    }}
-                  />
-                  <Bar dataKey="peakTemp" name="Peak Temp (°C)" radius={[0, 4, 4, 0]} />
-                  <Bar dataKey="stiffnessPct" name="Stiffness (%)" fillOpacity={0.5} radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ChartContainer>
             </CardContent>
           </Card>
 

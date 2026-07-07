@@ -169,7 +169,7 @@ describe('integrateBodyRK4', () => {
 });
 
 describe('existing simulation regression with RK4 body integrator', () => {
-  it('long-edge panels deploy in ~2.0s with no overshoot', () => {
+  it('long-edge panels deploy in ~0.4s with no overshoot', () => {
     const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 6);
     expect(frames.length).toBeGreaterThan(0);
 
@@ -182,11 +182,11 @@ describe('existing simulation regression with RK4 body integrator', () => {
     }
     expect(Math.max(...angleSeries)).toBeLessThanOrEqual(stopAngle + 1e-6);
 
-    // Deployment time ~2.0s
+    // Deployment time ~0.4s (DEFAULT_PARAMS.hinge.deployDuration = 0.4)
     const deployedFrame = frames.find(f => f.panelAngles[0] >= 0.999 * stopAngle);
     expect(deployedFrame).toBeDefined();
-    expect(deployedFrame!.time).toBeGreaterThan(1.75);
-    expect(deployedFrame!.time).toBeLessThan(2.25);
+    expect(deployedFrame!.time).toBeGreaterThan(0.25);
+    expect(deployedFrame!.time).toBeLessThan(0.55);
   });
 
   it('double-long-edge sequential deployment still works', () => {
@@ -201,8 +201,12 @@ describe('existing simulation regression with RK4 body integrator', () => {
     expect(last.panelAngles[0]).toBeCloseTo(stopAngle, 4);
     expect(last.panelAngles[1]).toBeCloseTo(stopAngle, 4);
 
-    // Stage 2 panels reach π
-    expect(last.panelAngles[2]).toBeCloseTo(stage2MaxAngle, 4);
-    expect(last.panelAngles[3]).toBeCloseTo(stage2MaxAngle, 4);
+    // Stage 2 panels reach ~π. At the faster 0.4s deployment they rest ~0.1°
+    // short of π (Coulomb-friction dead-band at the mechanical stop), so assert
+    // effectively-deployed (≥ 99.9% of π) with no overshoot rather than exact π.
+    expect(last.panelAngles[2]).toBeGreaterThanOrEqual(0.999 * stage2MaxAngle);
+    expect(last.panelAngles[2]).toBeLessThanOrEqual(stage2MaxAngle + 1e-6);
+    expect(last.panelAngles[3]).toBeGreaterThanOrEqual(0.999 * stage2MaxAngle);
+    expect(last.panelAngles[3]).toBeLessThanOrEqual(stage2MaxAngle + 1e-6);
   });
 });

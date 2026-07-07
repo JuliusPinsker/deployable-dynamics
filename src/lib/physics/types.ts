@@ -67,6 +67,8 @@ export interface SpacecraftState {
   deploying: boolean;
   // ── Internal quaternion state (engine-managed) ──
   _bodyQ?: Quaternion;       // body orientation quaternion
+  /** Composite system CoM in body frame (metres). Populated each step. */
+  comBody?: Vector3;
   // ── Thermal model state (optional) ──
   thermalState?: ThermalState;
   thermalParams?: ThermalParams;
@@ -207,7 +209,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
     stopAngle: Math.PI / 2,
     stopStiffness: 10,       // N·m/rad — ω_n ≈ 100 rad/s for I_panel = 0.001 kg·m²
     stopDamping: 0.24,        // N·m·s/rad — ζ ≈ 1.2 (overdamped, settles in ~0.05 s)
-    deployDuration: 2.0,
+    deployDuration: 0.4,     // 400 ms — consistent with Planet Labs Flock observed deployment
     shortEdgeStartDelays: [0, 1.0, 0, 1.0],
   },
   timeStep: 1 / 60,

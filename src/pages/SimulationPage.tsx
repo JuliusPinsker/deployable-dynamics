@@ -74,18 +74,22 @@ export default function SimulationPage() {
           },
         }
       : { ...DEFAULT_PARAMS };
+    const panelCount = CONFIGURATIONS.find(c => c.id === config)?.panelCount ?? 2;
+    // Sequential burn-wire release: panel i fires at i × δt. Applies to all configs.
+    const panelStartDelays = Array.from({ length: panelCount }, (_, i) => i * delaySeconds);
     const shortEdgeStartDelays: [number, number, number, number] = [0, delaySeconds, 0, delaySeconds];
     return {
       ...base,
       panelMass: navPanelMass,
       hinge: {
         ...base.hinge,
+        panelStartDelays,
         shortEdgeStartDelays,
       },
       gravityGradientEnabled,
       ...(flexEnabled ? { flex: DEFAULT_FLEX_PARAMS } : {}),
     };
-  }, [thermalEnabled, gravityGradientEnabled, flexEnabled, delaySeconds, navPanelMass]);
+  }, [config, thermalEnabled, gravityGradientEnabled, flexEnabled, delaySeconds, navPanelMass]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);

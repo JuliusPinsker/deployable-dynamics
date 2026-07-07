@@ -559,6 +559,19 @@ function CubeSatScene({
 
   useFrame(() => {
     if (!bodyRef.current) return;
+
+    // Rotate the body about its true composite CoM, not its geometric centre.
+    // Offsetting the group by -comBody × sceneScale keeps the CoM at the world
+    // origin, about which the rotation naturally occurs. Scale matches bodySize.
+    if (state.comBody) {
+      const scale = size * 4;
+      bodyRef.current.position.set(
+        -state.comBody.x * scale,
+        -state.comBody.y * scale,
+        -state.comBody.z * scale,
+      );
+    }
+
     bodyRef.current.rotation.set(
       state.orientation.x,
       state.orientation.y,
@@ -895,7 +908,7 @@ export default function CubeSatViewer(props: CubeSatModelProps) {
             display: 'flex', justifyContent: 'space-between',
             alignItems: 'center',
           }}>
-            <span style={{ fontSize: 11, color: '#888' }}>Offset</span>
+            <span style={{ fontSize: 11, color: '#888' }}>Offset:</span>
             <span style={{
               fontSize: 13, fontWeight: 800, fontFamily: 'monospace',
               color: comData.offsetMm < 2 ? '#22c55e'
