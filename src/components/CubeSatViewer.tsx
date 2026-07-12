@@ -2,7 +2,7 @@ import React, { useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
-import type { ConfigType, SpacecraftState, SimulationParams, ThermalState } from '@/lib/physics/types';
+import type { ConfigType, SpacecraftState, SimulationParams } from '@/lib/physics/types';
 import { DEFAULT_PARAMS } from '@/lib/physics/types';
 import { computeSystemCoM } from '@/lib/physics/engine';
 
@@ -19,7 +19,7 @@ interface CubeSatModelProps {
   /** When true, panel colours reflect temperature */
   thermalEnabled?: boolean;
   /** Current thermal state - temperature drives panel colour */
-  thermalState?: ThermalState;
+  thermalState?: { currentTemperatureDeg: number };
   showCoM?: boolean;
 }
 

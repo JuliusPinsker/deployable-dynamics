@@ -27,7 +27,7 @@ function round3(value: number): number {
 //  Test parameters: physics-driven spring deployment with zero external torque
 //  - deployDuration = 0 → enables spring-damper physics
 //  - frictionCoeff = 0 → zero friction for clean conservation
-//  - gravityGradientEnabled = false → pure free-float (no external torque)
+//  Body dynamics are pure free-float — only internal hinge reaction torques act.
 // ─────────────────────────────────────────────────────────────────────────────
 const FREE_FLOAT_PARAMS: SimulationParams = {
   ...DEFAULT_PARAMS,
@@ -36,7 +36,6 @@ const FREE_FLOAT_PARAMS: SimulationParams = {
     deployDuration: 0,       // spring-driven physics mode
     frictionCoeff: 0,        // zero friction for momentum conservation
   },
-  gravityGradientEnabled: false, // disable gravity gradient → pure free-float
 };
 
 describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
@@ -73,7 +72,7 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     // The momentumError field in SimulationFrame tracks |ΔH|/|H₀|
     // For a system starting from rest (H₀ ≈ 0), we check absolute momentum instead
     // Re-compute final momentum directly for accuracy
-    let state = createInitialState(config, FREE_FLOAT_PARAMS.thermal);
+    let state = createInitialState(config);
     state.deploying = true;
     const H0 = computeTotalAngularMomentum(state, config, FREE_FLOAT_PARAMS);
     const H0mag = v3Mag(H0);
@@ -142,7 +141,7 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     const config = 'double-long-edge' as const;
     const maxTime = 5;
 
-    let state = createInitialState(config, FREE_FLOAT_PARAMS.thermal);
+    let state = createInitialState(config);
     state.deploying = true;
     const H0 = computeTotalAngularMomentum(state, config, FREE_FLOAT_PARAMS);
 
@@ -167,7 +166,7 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     // Use shorter duration (1s) to reduce accumulated numerical drift
     const maxTime = 1;
 
-    let state = createInitialState(config, FREE_FLOAT_PARAMS.thermal);
+    let state = createInitialState(config);
     state.deploying = true;
     state.angularVelocity = { x: 0.1, y: 0.05, z: 0.02 }; // initial spin
 
@@ -279,7 +278,7 @@ describe('computeReportData', () => {
         )
       : 0;
 
-    const state = createInitialState(config, params.thermal, params.flex);
+    const state = createInitialState(config);
     state.panels = state.panels.map((panel, index) => ({
       ...panel,
       angle: last?.panelAngles?.[index] ?? panel.angle,

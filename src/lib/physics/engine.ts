@@ -16,8 +16,6 @@ import {
   type SimulationParams,
   type SpacecraftState,
   type PanelState,
-  type ThermalParams,
-  type FlexParams,
   CONFIGURATIONS,
   Vector3,
   Quaternion,
@@ -28,17 +26,6 @@ import {
 import { MathUtils } from 'three';
 
 import { getPanelSpecs } from './panelLayouts';
-import {
-  initThermalState,
-  stepThermalState,
-  applyThermalStiffness,
-} from './thermalModel';
-import {
-  initFlexState,
-  stepFlexState,
-  DEFAULT_FLEX_PARAMS,
-} from './flexModel';
-import { GM_EARTH, R_EARTH } from './constants';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Inertia tensor helpers (diagonal in body frame)
@@ -128,64 +115,6 @@ function applyInverseInertia(Idiag: Vector3, q: Quaternion, torqueWorld: Vector3
 /** I_body · ω  (diagonal body frame). */
 function applyInertia(Idiag: Vector3, w: Vector3): Vector3 {
   return new Vector3(Idiag.x * w.x, Idiag.y * w.y, Idiag.z * w.z);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Gravity gradient torque
-// ─────────────────────────────────────────────────────────────────────────────
-/**
- * Compute the gravity gradient torque acting on the spacecraft body.
- *
- * For a rigid body in a circular orbit, the gravity gradient torque is:
- *   τ_gg = (3μ/R³) · r̂_body × (I · r̂_body)
- *
- * In body-frame components (diagonal I):
- *   τ_x = (3μ/R³) · (Izz - Iyy) · r̂_y · r̂_z
- *   τ_y = (3μ/R³) · (Ixx - Izz) · r̂_z · r̂_x
- *   τ_z = (3μ/R³) · (Iyy - Ixx) · r̂_x · r̂_y
- *
- * Reference: Hughes (1986), Spacecraft Attitude Dynamics, §3.3.
- *
- * @param Ib   Diagonal body principal inertia tensor [Ixx, Iyy, Izz] (kg·m²)
- * @param qBody Current body orientation quaternion (world frame)
- * @param t    Current simulation time (seconds)
- * @param altitudeM Orbit altitude above Earth surface (metres)
- * @returns Gravity gradient torque vector in WORLD frame (N·m)
- */
-function computeGravityGradientTorque(
-  Ib: Vector3,
-  qBody: Quaternion,
-  t: number,
-  altitudeM: number,
-): Vector3 {
-  // Orbital mechanics
-  const R = R_EARTH + altitudeM;           // orbit radius (m)
-  const T_orbit = 2 * Math.PI * Math.sqrt((R * R * R) / GM_EARTH); // period (s)
-  const n = (2 * Math.PI) / T_orbit;       // mean motion (rad/s)
-
-  // Nadir unit vector in world frame: points from spacecraft toward Earth centre.
-  // For equatorial circular orbit in our convention (X=right, Y=forward, Z=up),
-  // nadir rotates in the Y-Z plane as the satellite orbits.
-  const nadirWorld = new Vector3(0, -Math.sin(n * t), -Math.cos(n * t));
-
-  // Transform nadir to body frame: r̂_body = q* ⊗ r̂_world
-  const qBodySafe = new Quaternion(qBody.x, qBody.y, qBody.z, qBody.w);
-  const nadirBody = nadirWorld.clone().applyQuaternion(qBodySafe.clone().conjugate());
-  const rx = nadirBody.x;
-  const ry = nadirBody.y;
-  const rz = nadirBody.z;
-
-  // Gravity gradient factor: 3μ/R³
-  const factor = (3 * GM_EARTH) / (R * R * R);
-
-  // Body-frame torque components (Hughes 1986, Eq. 3.3.10)
-  const tauBodyX = factor * (Ib.z - Ib.y) * ry * rz;
-  const tauBodyY = factor * (Ib.x - Ib.z) * rz * rx;
-  const tauBodyZ = factor * (Ib.y - Ib.x) * rx * ry;
-  const tauBody = new Vector3(tauBodyX, tauBodyY, tauBodyZ);
-
-  // Rotate torque back to world frame for accumulation with hinge torques
-  return tauBody.applyQuaternion(qBodySafe);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -576,8 +505,6 @@ function createInitialPanels(config: ConfigType): PanelState[] {
 
 export function createInitialState(
   config: ConfigType,
-  thermalParams?: ThermalParams,
-  flexParams?: FlexParams,
 ): SpacecraftState {
   const panels = createInitialPanels(config);
   return {
@@ -588,9 +515,6 @@ export function createInitialState(
     time: 0,
     deploying: false,
     _bodyQ: new Quaternion(),
-    thermalState: thermalParams ? initThermalState(thermalParams) : undefined,
-    thermalParams: thermalParams,
-    flexState: flexParams ? panels.map(() => initFlexState(flexParams)) : undefined,
   };
 }
 
@@ -607,12 +531,6 @@ export function stepSimulation(
 
   const dt = params.timeStep;
 
-  // ── Step thermal model (if active) ─────────────────────────────────────────
-  let thermalState = state.thermalState;
-  const thermalParams = state.thermalParams ?? params.thermal;
-  if (thermalState && thermalParams) {
-    thermalState = stepThermalState(thermalState, thermalParams, dt);
-  }
   const specs = getPanelSpecs(config, params);
 
   // ── Current body state ────────────────────────────────────────────────────
@@ -637,7 +555,6 @@ export function stepSimulation(
     deployedNew: boolean;
     contactForceNew: number;
     hingeTorque: number;
-    thetaDDot: number;     // angular acceleration for flex model
     aBody: Vector3;        // physical hinge axis in body frame (rot-rotated)
     aLocal: Vector3;       // raw hinge axis in local frame (before rot)
     qMount: Quaternion;    // mounting rotation quaternion from spec.rot
@@ -651,7 +568,7 @@ export function stepSimulation(
     if (panel.stuck) {
       updates.push({
         thetaNew: panel.angle, omegaRelNew: 0, deployedNew: panel.deployed,
-        contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
+        contactForceNew: 0, hingeTorque: 0,
         aBody: new Vector3(0, 0, 0), aLocal: new Vector3(0, 0, 0), qMount: new Quaternion(),
       });
       continue;
@@ -664,7 +581,7 @@ export function stepSimulation(
       const aBodyD = aLocalD.clone().applyQuaternion(qMountD.clone());
       updates.push({
         thetaNew: panel.angle, omegaRelNew: 0, deployedNew: true,
-        contactForceNew: 0, hingeTorque: 0, thetaDDot: 0,
+        contactForceNew: 0, hingeTorque: 0,
         aBody: aBodyD, aLocal: aLocalD, qMount: qMountD,
       });
       continue;
@@ -719,7 +636,7 @@ export function stepSimulation(
     });
 
     let thetaNew: number, omegaRelNew: number, deployedNew: boolean;
-    let contactForceNew: number, hingeTorque: number, thetaDDot: number;
+    let contactForceNew: number, hingeTorque: number;
 
     if (!previousStagesComplete) {
       // ── Waiting for previous stages — hold perfectly still ─────────────
@@ -728,7 +645,6 @@ export function stepSimulation(
       deployedNew = false;
       contactForceNew = 0;
       hingeTorque = 0;
-      thetaDDot = 0;
 
     } else if ((state.time + dt) < panelStartTime) {
       // ── Delayed activation window — hold panel stowed until its start time ──
@@ -737,7 +653,6 @@ export function stepSimulation(
       deployedNew = false;
       contactForceNew = 0;
       hingeTorque = 0;
-      thetaDDot = 0;
 
     } else if (deployDuration > 0) {
       // ── Kinematic ease-out deployment (stage-aware) ────────────────────────
@@ -757,7 +672,6 @@ export function stepSimulation(
       // Kinematic panels should not inject reaction torque into body dynamics.
       // Momentum conservation is enforced by the correction loop using the
       // prescribed panel angles.
-      thetaDDot = (omegaRelNew - omegaRel) / dt;
       hingeTorque = 0;
       contactForceNew = 0;
 
@@ -777,11 +691,7 @@ export function stepSimulation(
         tau = -2 * A * theta * (theta - stopAngle) * (2 * theta - stopAngle) + h.preloadTorque;
       } else {
         // ── Linear spring-damper (default) ───────────────────────────────────
-        // Apply thermal stiffness multiplier if thermal model is active
-        const effectiveSpringConstant = thermalState && thermalParams
-          ? applyThermalStiffness(h.springConstant, thermalState, thermalParams)
-          : h.springConstant;
-        tau = effectiveSpringConstant * (stopAngle - theta) + h.preloadTorque;
+        tau = h.springConstant * (stopAngle - theta) + h.preloadTorque;
       }
 
       // ── Split conservative torque from linear (velocity-proportional) damping ──
@@ -810,9 +720,8 @@ export function stepSimulation(
       thetaNew = theta + omegaRelNew * dt;
 
       // Total hinge torque actually applied this step (damping uses the implicit ω_new),
-      // used for the equal-and-opposite body reaction below and flex forcing.
+      // used for the equal-and-opposite body reaction below.
       hingeTorque = tauCons - cTotal * omegaRelNew - friction;
-      thetaDDot = (omegaRelNew - omegaRel) / dt;
 
       // Stop contact force magnitude (elastic + damping parts) for telemetry.
       const tContact = penetration > 0
@@ -825,7 +734,7 @@ export function stepSimulation(
       if (deployedNew) { thetaNew = stopAngle; omegaRelNew = 0; }
     }
 
-    updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, thetaDDot, aBody, aLocal, qMount });
+    updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, aBody, aLocal, qMount });
 
     // Accumulate equal-and-opposite reaction on body:  τ_body += −τ · â_world
     const aWorld2 = aBody.clone().applyQuaternion(qBody.clone());
@@ -834,42 +743,14 @@ export function stepSimulation(
     bodyTorqueWorld.z -= hingeTorque * aWorld2.z;
   }
 
-  // ── Phase 1b: Update flexible panel dynamics (if enabled) ─────────────────
-  // Step the Craig-Bampton modal dynamics for each panel using thetaDDot
-  const flexParams = params.flex;
-  let newFlexState = state.flexState;
-  if (flexParams && newFlexState) {
-    newFlexState = newFlexState.map((fs, i) => {
-      const up = updates[i];
-      return stepFlexState(
-        fs,
-        flexParams,
-        up.thetaDDot,
-        dt,
-        specs[i].size[0], // panel length
-        params.panelMass,
-      );
-    });
-  }
-
   // ── Phase 2: body rotational dynamics (RK4 + conservation correction) ─────
   // Integrate spacecraft body attitude using 4th-order Runge-Kutta.
-  // External torque = hinge reaction torques + gravity gradient disturbance.
+  // External torque = summed hinge reaction torques (internal forces only).
   // Then apply angular-momentum conservation correction as per Hughes (1986) Ch. 3.
-
-  // Compute gravity gradient torque and add to body torque
-  const totalBodyTorqueWorld = bodyTorqueWorld.clone();
-  if (params.gravityGradientEnabled !== false) {
-    const altM = params.orbitAltitudeM ?? 400_000;
-    const ggTorque = computeGravityGradientTorque(Ib, qBody, state.time, altM);
-    totalBodyTorqueWorld.x += ggTorque.x;
-    totalBodyTorqueWorld.y += ggTorque.y;
-    totalBodyTorqueWorld.z += ggTorque.z;
-  }
 
   // Step 2a: RK4 integration for body (predictor step)
   const { qBodyNew: qBodyRK4, omegaBodyNew: omegaBodyRK4 } = integrateBodyRK4(
-    qBody, omegaBody, totalBodyTorqueWorld, Ib, dt,
+    qBody, omegaBody, bodyTorqueWorld, Ib, dt,
   );
 
   // Step 2b-2c: Iterative conservation correction
@@ -979,9 +860,6 @@ export function stepSimulation(
     const aWorldNew = up.aBody.clone().applyQuaternion(qBodyNew.clone());
     const omegaPanelNew = omegaBodyNew.clone().add(aWorldNew.clone().multiplyScalar(up.omegaRelNew));
 
-    // Get tip deflection from flex state (if enabled)
-    const tipDeflectionDeg = newFlexState?.[i]?.tipDeflectionDeg;
-
     return {
       ...panel,
       angle: up.thetaNew,
@@ -990,7 +868,6 @@ export function stepSimulation(
       contactForce: up.contactForceNew,
       _q: qPanelNew,
       _omega: omegaPanelNew,
-      tipDeflectionDeg,
     };
   });
 
@@ -1007,9 +884,6 @@ export function stepSimulation(
     time: state.time + dt,
     deploying: !allDeployed,
     _bodyQ: qBodyNew,
-    thermalState,
-    thermalParams,
-    flexState: newFlexState,
   };
 
   // Compute the composite system CoM for the newly assembled state so the
@@ -1031,19 +905,11 @@ export interface SimulationFrame {
   totalContactForce: number;
   /** Relative angular momentum error |H - H₀| / |H₀| (dimensionless). 0 when H₀ ≈ 0. */
   momentumError: number;
-  /** Current thermal temperature in °C (undefined if thermal model inactive). */
-  thermalTemperatureDeg?: number;
-  /** Thermal stiffness multiplier (undefined if thermal model inactive). */
-  stiffnessMultiplier?: number;
-  /** Gravity gradient torque magnitude at this timestep (N·m). */
-  gravityGradientTorqueMag?: number;
   /**
    * Cumulative body attitude rotation (in degrees) caused purely by panel deployment
    * angular momentum exchange — body Euler-angle change from t=0 to current frame.
    */
   attitudeCouplingDeg?: number;
-  /** Panel tip deflections in degrees (undefined if flex model inactive). */
-  tipDeflectionDeg?: number[];
   /**
    * Rotational kinetic energy of the spacecraft body at this timestep (mJ).
    *
@@ -1081,7 +947,7 @@ export function runFullSimulation(
   maxTime: number = 10,
   stuckPanels: number[] = [],
 ): SimulationFrame[] {
-  let state = createInitialState(config, params.thermal, params.flex);
+  let state = createInitialState(config);
   state.deploying = true;
 
   // Apply stuck panels
@@ -1151,24 +1017,7 @@ export function runFullSimulation(
         contactForces: state.panels.map(p => p.contactForce),
         totalContactForce: state.panels.reduce((s, p) => s + p.contactForce, 0),
         momentumError,
-        thermalTemperatureDeg: state.thermalState?.currentTemperatureDeg,
-        stiffnessMultiplier: state.thermalState?.stiffnessMultiplier,
-        gravityGradientTorqueMag: params.gravityGradientEnabled !== false
-          ? (() => {
-              const altM = params.orbitAltitudeM ?? 400_000;
-              const gg = computeGravityGradientTorque(
-                bodyInertiaDiag(params),
-                state._bodyQ ?? new Quaternion(),
-                state.time,
-                altM,
-              );
-              return Math.sqrt(gg.x * gg.x + gg.y * gg.y + gg.z * gg.z);
-            })()
-          : undefined,
         attitudeCouplingDeg,
-        tipDeflectionDeg: state.flexState
-          ? state.panels.map(p => p.tipDeflectionDeg ?? 0)
-          : undefined,
         eDetumble: Math.round(eDetumbleMJ * 1000) / 1000,
       });
     }
@@ -1245,7 +1094,7 @@ export function computeReportData(
 
   let comOffsetMm = 0;
   try {
-    const state = createInitialState(config, params.thermal, params.flex);
+    const state = createInitialState(config);
     const stuckSet = new Set(stuckMap[failureMode]);
     state.panels = state.panels.map((panel, index) => ({
       ...panel,

@@ -2,11 +2,6 @@
 
 import type { Vector3, Quaternion } from 'three';
 export { Vector3, Quaternion, Euler } from 'three';
-import type { ThermalState, ThermalParams } from './thermalModel';
-import type { FlexParams, FlexState } from './flexModel';
-
-export type { ThermalState, ThermalParams } from './thermalModel';
-export type { FlexParams, FlexState } from './flexModel';
 
 export interface HingeParams {
   springConstant: number;    // N·m/rad
@@ -54,8 +49,6 @@ export interface PanelState {
   // ── Internal 3D state (engine-managed, derived each step) ──
   _q?: Quaternion;           // panel orientation quaternion (world frame)
   _omega?: Vector3;          // panel angular velocity (world frame, 3D)
-  // ── Flexible panel dynamics (optional) ──
-  tipDeflectionDeg?: number; // tip deflection as equivalent angle error (degrees)
 }
 
 export interface SpacecraftState {
@@ -69,11 +62,6 @@ export interface SpacecraftState {
   _bodyQ?: Quaternion;       // body orientation quaternion
   /** Composite system CoM in body frame (metres). Populated each step. */
   comBody?: Vector3;
-  // ── Thermal model state (optional) ──
-  thermalState?: ThermalState;
-  thermalParams?: ThermalParams;
-  // ── Flexible panel dynamics state (optional, one per panel) ──
-  flexState?: FlexState[];
 }
 
 export interface SimulationParams {
@@ -87,14 +75,6 @@ export interface SimulationParams {
   bodyHeight: number;        // m (Z dimension / up / long edge)
   hinge: HingeParams;
   timeStep: number;          // seconds
-  /** Orbit altitude above Earth's surface in metres (default: 400,000 m = 400 km LEO). */
-  orbitAltitudeM?: number;
-  /** Whether to include gravity gradient torque in body dynamics (default: true). */
-  gravityGradientEnabled?: boolean;
-  // ── Optional thermal model parameters ──
-  thermal?: ThermalParams;
-  // ── Optional flexible panel dynamics parameters ──
-  flex?: FlexParams;
 }
 
 export type ConfigType =
@@ -213,6 +193,4 @@ export const DEFAULT_PARAMS: SimulationParams = {
     shortEdgeStartDelays: [0, 1.0, 0, 1.0],
   },
   timeStep: 1 / 60,
-  orbitAltitudeM: 400_000,       // 400 km LEO
-  gravityGradientEnabled: true,
 };

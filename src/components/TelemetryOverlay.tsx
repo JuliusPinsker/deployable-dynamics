@@ -3,11 +3,9 @@ import type { SpacecraftState } from '@/lib/physics/types';
 
 interface TelemetryOverlayProps {
   state: SpacecraftState;
-  gravityGradientTorqueMag?: number;
   eDetumbleMJ?: number;
   delayMagnitude: number;
   delayUnit: 'ns' | 'µs' | 'ms';
-  panelLength?: number; // metres, for computing tip deflection in mm
   materialLabel: string;
 }
 
@@ -31,12 +29,10 @@ function toDegPerSec(rad: number): string {
 
 export default function TelemetryOverlay({
   state,
-  gravityGradientTorqueMag,
   eDetumbleMJ,
   delayMagnitude,
   delayUnit,
   materialLabel,
-  panelLength = 0.1, // default 0.1 m
 }: TelemetryOverlayProps) {
   const maxContact = Math.max(...state.panels.map(p => p.contactForce), 0);
   const avgAngle = state.panels.reduce((s, p) => s + p.angle, 0) / state.panels.length;
@@ -50,19 +46,6 @@ export default function TelemetryOverlay({
   const delayDisplay = delayMagnitude === 0
     ? '0 (ideal sync)'
     : `${delayMagnitude} ${delayUnit}`;
-
-  // Compute max tip deflection in mm from tipDeflectionDeg (if flex model active)
-  const hasFlex = state.panels.some(p => p.tipDeflectionDeg !== undefined);
-  const maxTipDeflectionMm = hasFlex
-    ? Math.max(
-        ...state.panels.map(p => {
-          if (p.tipDeflectionDeg === undefined) return 0;
-          // deflection (m) = tipDeflectionDeg × π/180 × panelLength
-          // deflection (mm) = above × 1000
-          return Math.abs(p.tipDeflectionDeg) * (Math.PI / 180) * panelLength * 1000;
-        }),
-      )
-    : undefined;
 
   return (
     <div className="absolute top-3 left-3 bg-card/90 backdrop-blur-md border border-border rounded-lg p-3 font-mono text-xs space-y-2 min-w-[200px]">
@@ -102,15 +85,6 @@ export default function TelemetryOverlay({
       </div>
 
       <div className="border-t border-border pt-1 flex justify-between">
-        <span className="text-muted-foreground">GG Torque</span>
-        <span className="text-yellow-400">
-          {gravityGradientTorqueMag !== undefined
-            ? `${(gravityGradientTorqueMag * 1e6).toFixed(3)} µN·m`
-            : '—'}
-        </span>
-      </div>
-
-      <div className="border-t border-border pt-1 flex justify-between">
         <span className="text-muted-foreground">E detumble</span>
         <span className="font-mono font-semibold" style={{ color: eDetumbleColor }}>
           {eDetumbleValue.toFixed(3)} mJ
@@ -121,16 +95,6 @@ export default function TelemetryOverlay({
         <span className="text-muted-foreground">Panel material</span>
         <span>{materialLabel}</span>
       </div>
-
-      {/* Flexible panel tip deflection (if flex model active) */}
-      {maxTipDeflectionMm !== undefined && (
-        <div className="border-t border-border pt-1 flex justify-between">
-          <span className="text-muted-foreground">Tip Flex</span>
-          <span className="text-cyan-400">
-            {maxTipDeflectionMm.toFixed(2)} mm
-          </span>
-        </div>
-      )}
 
       <div className="border-t border-border pt-1 flex justify-between">
         <span className="text-muted-foreground">Δt actuation</span>

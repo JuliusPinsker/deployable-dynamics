@@ -81,7 +81,6 @@ function makeFrame(time: number) {
     angularVelocity: { x: 0.05, y: 0.03, z: 0.02 },
     angularAcceleration: { x: 0.02, y: 0.01, z: 0.01 },
     totalContactForce: 4.2,
-    gravityGradientTorqueMag: 1e-6,
     eDetumble: 0.123,
   };
 }
