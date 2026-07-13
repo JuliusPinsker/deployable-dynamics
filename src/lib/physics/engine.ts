@@ -542,10 +542,11 @@ function createInitialPanels(config: ConfigType): PanelState[] {
 
 export function createInitialState(
   config: ConfigType,
+  initialOmega: Vector3 = new Vector3(0, 0, 0),
 ): SpacecraftState {
   const panels = createInitialPanels(config);
   return {
-    angularVelocity: new Vector3(0, 0, 0),
+    angularVelocity: initialOmega.clone(),
     angularAcceleration: new Vector3(0, 0, 0),
     orientation: new Vector3(0, 0, 0),
     panels,
@@ -998,8 +999,9 @@ export function runFullSimulation(
   params: SimulationParams = DEFAULT_PARAMS,
   maxTime: number = 10,
   stuckPanels: number[] = [],
+  initialOmega: Vector3 = new Vector3(0, 0, 0),
 ): SimulationFrame[] {
-  let state = createInitialState(config);
+  let state = createInitialState(config, initialOmega);
   state.deploying = true;
 
   // Apply stuck panels

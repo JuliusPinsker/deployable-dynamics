@@ -15,6 +15,7 @@ import {
   type SpacecraftState,
   type SimulationParams,
   Quaternion,
+  Vector3,
 } from '@/lib/physics/types';
 import {
   computeEDetumble,
@@ -32,6 +33,24 @@ const UNIT_TO_SECONDS: Record<'ns' | 'µs' | 'ms', number> = {
   µs: 1e-6,
   ms: 1e-3,
 };
+
+// Initial-tumble ω₀ presets (deg/s), applied about body Z so |ω₀| equals the labelled rate.
+// Grounded in published CubeSat post-separation / deployment-induced body rates:
+//  - Typical tip-off 10°/s and worst-case 200°/s (SwissCube's flown post-separation rate):
+//      Yadav & Goyal, "Investigation of Instabilities in Detumbling Algorithms" (BITS Pilani / IEEE 2020)
+//  - Elevated 30°/s: mid-range of asymmetric / stuck-panel body rates (14–50°/s):
+//      Peters, "Dynamic Instabilities Imparted by CubeSat Deployable Solar Panels" (MIT thesis)
+const TUMBLE_PRESETS = [
+  { label: 'At rest', sub: '0°/s (default)', rate: 0 },
+  { label: 'Typical', sub: '10°/s tip-off', rate: 10 },
+  { label: 'Elevated', sub: '30°/s deploy-induced', rate: 30 },
+  { label: 'Worst case', sub: '200°/s (SwissCube)', rate: 200 },
+] as const;
+
+/** Convert a {x,y,z} tumble vector in °/s to a rad/s Vector3 for the engine boundary. */
+function degToRadVec(d: { x: number; y: number; z: number }): Vector3 {
+  return new Vector3(d.x, d.y, d.z).multiplyScalar(Math.PI / 180);
+}
 
 export default function SimulationPage() {
   const [searchParams] = useSearchParams();
@@ -55,6 +74,9 @@ export default function SimulationPage() {
   const [failureMode, setFailureMode] = useState<
     'nominal' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck'
   >('nominal');
+  // Initial body tumble ω₀ in °/s (UI unit). Converted to rad/s at the engine boundary.
+  const [tumbleDeg, setTumbleDeg] = useState<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
+  const [advancedTumbleOpen, setAdvancedTumbleOpen] = useState(false);
   const delaySeconds = delayMagnitude * UNIT_TO_SECONDS[delayUnit];
   const delayPresets = [
     { label: 'Ideal (0 ns)', magnitude: 0, unit: 'ns' },
@@ -170,30 +192,49 @@ export default function SimulationPage() {
     [getStuckIndicesForMode],
   );
 
+  // Single reseed path for EVERY scenario change (Reset, config, failure mode, ω₀).
+  // Takes explicit NEXT values — React state updates are async, so handlers must never
+  // rebuild state from a just-set config/failureMode/tumbleDeg. Guarantees, in order:
+  // cancel any active frame loop, clear run-specific peak telemetry, then build exactly
+  // one fresh state (deploying=false → paused, time=0, panels folded, failure mode
+  // re-applied as stuck-at-0) so Deploy can immediately start a clean run.
+  const resetSimulation = useCallback(
+    (
+      nextConfig: ConfigType,
+      nextFailureMode: typeof failureMode,
+      nextTumbleDeg: { x: number; y: number; z: number },
+    ) => {
+      cancelAnimationFrame(rafRef.current);
+      peakRef.current = EMPTY_OMEGA_PEAK;
+      const base = createInitialState(nextConfig, degToRadVec(nextTumbleDeg));
+      setState(applyFailureModeToState(base, nextFailureMode, nextConfig));
+    },
+    [applyFailureModeToState],
+  );
+
   const handleReset = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
-    peakRef.current = EMPTY_OMEGA_PEAK;
-    const base = createInitialState(config);
-    setState(applyFailureModeToState(base, failureMode, config));
-  }, [config, failureMode, applyFailureModeToState]);
+    resetSimulation(config, failureMode, tumbleDeg);
+  }, [config, failureMode, tumbleDeg, resetSimulation]);
 
   const handleConfigChange = useCallback((c: ConfigType) => {
-    cancelAnimationFrame(rafRef.current);
-    peakRef.current = EMPTY_OMEGA_PEAK;
     setConfig(c);
-    const base = createInitialState(c);
-    setState(applyFailureModeToState(base, failureMode, c));
-  }, [failureMode, applyFailureModeToState]);
+    resetSimulation(c, failureMode, tumbleDeg);
+  }, [failureMode, tumbleDeg, resetSimulation]);
 
   const handleFailureModeChange = useCallback(
     (mode: typeof failureMode) => {
-      cancelAnimationFrame(rafRef.current);
-      peakRef.current = EMPTY_OMEGA_PEAK;
       setFailureMode(mode);
-      const base = createInitialState(config);
-      setState(applyFailureModeToState(base, mode, config));
+      resetSimulation(config, mode, tumbleDeg);
     },
-    [config, applyFailureModeToState],
+    [config, tumbleDeg, resetSimulation],
+  );
+
+  const handleTumbleChange = useCallback(
+    (next: { x: number; y: number; z: number }) => {
+      setTumbleDeg(next);
+      resetSimulation(config, failureMode, next);
+    },
+    [config, failureMode, resetSimulation],
   );
 
   useEffect(() => {
@@ -454,6 +495,73 @@ export default function SimulationPage() {
                     </span>
                   </div>
                 ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm">Initial Tumble (ω₀)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-[10px] text-muted-foreground">
+                Body angular rate at t=0, applied about Z. Presets from flown / literature CubeSat rates.
+              </p>
+              <div className="space-y-1.5">
+                {TUMBLE_PRESETS.map(preset => {
+                  const active =
+                    tumbleDeg.x === 0 && tumbleDeg.y === 0 && tumbleDeg.z === preset.rate;
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => handleTumbleChange({ x: 0, y: 0, z: preset.rate })}
+                      className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors border ${
+                        active
+                          ? 'border-primary bg-primary/10 text-foreground'
+                          : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
+                      }`}
+                    >
+                      <span className="font-medium">{preset.label}</span>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">{preset.sub}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="pt-1 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setAdvancedTumbleOpen(o => !o)}
+                  className="mt-2 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {advancedTumbleOpen ? '▾' : '▸'} Advanced (manual ωx / ωy / ωz)
+                </button>
+                {advancedTumbleOpen && (
+                  <div className="mt-2 space-y-2">
+                    {(['x', 'y', 'z'] as const).map(axis => (
+                      <div key={axis} className="flex items-center justify-between gap-2">
+                        <Label className="text-xs text-muted-foreground">ω{axis}</Label>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            step={1}
+                            value={tumbleDeg[axis]}
+                            onChange={e => {
+                              const v = Number(e.target.value);
+                              handleTumbleChange({
+                                ...tumbleDeg,
+                                [axis]: Number.isFinite(v) ? v : 0,
+                              });
+                            }}
+                            className="w-24 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+                          />
+                          <span className="text-[10px] text-muted-foreground">°/s</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { MathUtils } from 'three';
 import { computeSingleRow, runScenarioTrajectory } from '../lib/physics/reportData';
-import { accumulateOmegaPeak, EMPTY_OMEGA_PEAK } from '../lib/physics/engine';
+import { accumulateOmegaPeak, EMPTY_OMEGA_PEAK, runFullSimulation } from '../lib/physics/engine';
+import { DEFAULT_PARAMS, Vector3 } from '../lib/physics/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Peak-frame reporting (regression protection for thesis-facing numbers)
@@ -51,6 +52,32 @@ describe('computeSingleRow — peak-frame reporting', () => {
 // Shared peak-by-|ω| accumulator — used by both computeSingleRow (trajectory reduce) and the
 // live Simulation-page telemetry (per-frame fold). Guards the "hold the peak, ignore the decay"
 // behaviour that fixes the E_detumble-resets-to-0 telemetry issue.
+// A nonzero initial tumble ω₀ must flow through to the peak-ω reporting. We isolate it from
+// deployment torque with the all-stuck scenario (both panels stuck → the body just coasts).
+// ω₀ is about the long-edge's principal Z axis, so ω × Iω = 0 and the body is torque-free:
+// ω_z is preserved to machine precision, and the peak |ω| equals |ω₀| exactly. This validates
+// the ω₀ → report path via the same shared `accumulateOmegaPeak` fold that `computeSingleRow`
+// uses, without touching reportData's public API. (During an actual tumbling deployment the peak
+// is ≥ |ω₀| plus a deployment-induced transient; the coast case pins the lower bound cleanly —
+// note runFullSimulation records its first frame after one step, so t=0 itself is never sampled.)
+describe('peak-ω reporting with initial tumble (ω₀)', () => {
+  it('reports peakOmegaDegPerS >= |ω₀| when the body starts tumbling', () => {
+    const omega0 = new Vector3(0, 0, 0.5); // rad/s about principal Z
+    const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 2, [0, 1], omega0);
+
+    let peak = EMPTY_OMEGA_PEAK;
+    for (const f of frames) {
+      peak = accumulateOmegaPeak(peak, f.angularVelocity.length(), f.eDetumble);
+    }
+
+    const peakDeg = MathUtils.radToDeg(peak.peakOmegaRad);
+    const omega0Deg = MathUtils.radToDeg(omega0.length());
+
+    // FP-robust `>=` (peak equals |ω₀| for a coasting principal-axis spin).
+    expect(peakDeg).toBeGreaterThanOrEqual(omega0Deg - 1e-6);
+  });
+});
+
 describe('accumulateOmegaPeak', () => {
   it('holds the eDetumble at the max-|ω| sample and ignores the later decay to ~0', () => {
     let p = EMPTY_OMEGA_PEAK;

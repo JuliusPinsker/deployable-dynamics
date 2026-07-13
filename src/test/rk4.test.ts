@@ -101,6 +101,27 @@ describe('integrateBodyRK4', () => {
     expect(Math.abs(omega.y)).toBeLessThan(1e-10);
   });
 
+  it('preserves a constant principal-axis spin (ω₀) under zero torque', () => {
+    // A torque-free body preserves ω only about a principal axis (general ω precesses —
+    // see the precession test below). I_BODY is diagonal, so Z is principal: spin about Z
+    // must stay constant with no cross-axis leakage.
+    const omega0: Vector3 = { x: 0, y: 0, z: 0.5 };
+    const dt = 1 / 60;
+
+    let q: Quaternion = { ...Q_IDENTITY };
+    let w: Vector3 = { ...omega0 };
+    for (let i = 0; i < 300; i++) { // 5 seconds
+      const r = integrateBodyRK4(q, w, ZERO_VEC, I_BODY, dt);
+      q = r.qBodyNew;
+      w = r.omegaBodyNew;
+    }
+
+    // ω_z preserved within relative 5%; negligible cross-axis contamination.
+    expect(Math.abs(w.z - omega0.z) / omega0.z).toBeLessThan(0.05);
+    expect(Math.abs(w.x)).toBeLessThan(1e-6);
+    expect(Math.abs(w.y)).toBeLessThan(1e-6);
+  });
+
   it('conserves rotational kinetic energy during torque-free precession', () => {
     // Non-principal-axis spin, zero external torque → T = 0.5·ω·I·ω is conserved
     const omega0: Vector3 = { x: 1.0, y: 0.5, z: 0.3 };

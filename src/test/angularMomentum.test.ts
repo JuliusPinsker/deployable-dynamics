@@ -5,8 +5,7 @@ import {
   stepSimulation,
   runFullSimulation,
 } from '../lib/physics/engine';
-import { DEFAULT_PARAMS } from '../lib/physics/types';
-import type { Vector3, SimulationParams } from '../lib/physics/types';
+import { DEFAULT_PARAMS, Vector3, type SimulationParams } from '../lib/physics/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helper: vector magnitude
@@ -104,6 +103,38 @@ describe('angular momentum conservation (physics-driven mode)', () => {
     const dH = { x: H1.x - H0.x, y: H1.y - H0.y, z: H1.z - H0.z };
     const relError = v3Mag(dH) / H0mag;
     expect(relError).toBeLessThan(0.05);
+  });
+});
+
+describe('configurable initial tumble (ω₀)', () => {
+  it('createInitialState applies ω₀ to the spacecraft angular velocity', () => {
+    const omega0 = new Vector3(0.1, -0.2, 0.3);
+    const state = createInitialState('long-edge', omega0);
+
+    expect(state.angularVelocity.x).toBeCloseTo(0.1, 12);
+    expect(state.angularVelocity.y).toBeCloseTo(-0.2, 12);
+    expect(state.angularVelocity.z).toBeCloseTo(0.3, 12);
+
+    // Default (no arg) still starts at rest — guards backward compatibility.
+    const rest = createInitialState('long-edge');
+    expect(v3Mag(rest.angularVelocity)).toBeCloseTo(0, 12);
+  });
+
+  it('runFullSimulation seeds ω₀ and conserves momentum (relative < 5%)', () => {
+    // ω₀ about Z (principal axis of the symmetric stowed long-edge).
+    const omega0 = new Vector3(0, 0, 0.2);
+    const frames = runFullSimulation('long-edge', PHYSICS_PARAMS, 2, [], omega0);
+
+    expect(frames.length).toBeGreaterThan(0);
+    // frames[0] is recorded AFTER the first step, so ω is ≈ ω₀ (not exactly).
+    expect(frames[0].angularVelocity.z).toBeCloseTo(0.2, 2);
+
+    // The engine reports RELATIVE momentum error (dH / |H₀|) since |H₀| ≠ 0 here.
+    // NOTE: 5% is the current iterative-correction tolerance and is provisional —
+    // it will likely tighten to ~0.1% once Phase B replaces that mechanism.
+    for (const f of frames) {
+      expect(f.momentumError).toBeLessThan(0.05);
+    }
   });
 });
 
