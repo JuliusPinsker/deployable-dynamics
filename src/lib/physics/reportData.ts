@@ -3,14 +3,17 @@ import {
   CONFIGURATIONS,
   DEFAULT_PARAMS,
   MATERIAL_PRESETS,
-  Vector3,
-  Quaternion,
   type ConfigType,
   type FailureModeKey,
   type MaterialPresetKey,
   type SimulationParams,
 } from './types';
-import { runFullSimulation, computeEDetumble } from './engine';
+import {
+  runFullSimulation,
+  accumulateOmegaPeak,
+  EMPTY_OMEGA_PEAK,
+  type SimulationFrame,
+} from './engine';
 
 export type SimulationConfig = ConfigType;
 export type FailureMode = FailureModeKey;
@@ -79,30 +82,52 @@ function buildParams(panelMass: number): SimulationParams {
   };
 }
 
-function computeSingleRow(
+/** Simulation horizon (seconds) used for every report scenario row. */
+export const REPORT_MAX_TIME = 8;
+
+/**
+ * Build the exact inputs and trajectory a report row is derived from. Exposed so tests
+ * (and any future tooling) can assert against the real computation path — same
+ * material-sourced params (`buildParams`), stuck-panel resolution, and horizon — instead of
+ * reconstructing those values by hand and silently drifting when the source data changes.
+ */
+export function runScenarioTrajectory(
+  config: SimulationConfig,
+  failureMode: FailureMode,
+  material: PanelMaterial,
+): { params: SimulationParams; stuckPanels: number[]; trajectory: SimulationFrame[] } {
+  const params = buildParams(materialMasses[material]);
+  const stuckPanels = resolveStuckPanels(config, failureMode);
+  const trajectory = runFullSimulation(config, params, REPORT_MAX_TIME, stuckPanels);
+  return { params, stuckPanels, trajectory };
+}
+
+export function computeSingleRow(
   config: SimulationConfig,
   failureMode: FailureMode,
   material: PanelMaterial,
 ): ReportRow {
   const panelMass = materialMasses[material];
-  const params = buildParams(panelMass);
-  const stuckPanels = resolveStuckPanels(config, failureMode);
-  const trajectory = runFullSimulation(config, params, 8, stuckPanels);
+  const { trajectory } = runScenarioTrajectory(config, failureMode, material);
   const lastState = trajectory.at(-1);
 
+  // Final panel angle comes from the last frame — panels are held at their final angles.
   const lastAngles = lastState?.panelAngles ?? [];
   const finalAngleRad = lastAngles.length > 0 ? Math.max(...lastAngles) : 0;
   const finalAngleDeg = MathUtils.radToDeg(finalAngleRad);
 
-  const finalOmegaRad = lastState?.angularVelocity.length() ?? 0;
-  const finalOmegaDegPerS = MathUtils.radToDeg(finalOmegaRad);
-
-  const fallbackDetumble = computeEDetumble(
-    lastState?.angularVelocity ?? new Vector3(0, 0, 0),
-    new Quaternion(),
-    params,
-  );
-  const eDetumbleMJ = lastState?.eDetumble ?? fallbackDetumble;
+  // Peak-angular-velocity frame. The LAST frame is a settled/near-zero frame — the body
+  // starts from rest and momentum is conserved, so ω decays back to ~0 once the panels stop
+  // moving. Reading w_final / E_det from it is misleading. Reduce the full trajectory to the
+  // peak-ω frame via the shared accumulator (same rule live telemetry uses) and use it for
+  // both. (`all-stuck` and symmetric-nominal legitimately keep peak = 0 → w_final = 0, E_det = 0.)
+  let peak = EMPTY_OMEGA_PEAK;
+  for (const state of trajectory) {
+    peak = accumulateOmegaPeak(peak, state.angularVelocity.length(), state.eDetumble);
+  }
+  const finalOmegaDegPerS = MathUtils.radToDeg(peak.peakOmegaRad);
+  const eDetumbleMJ = peak.eDetumbleMJ;
+  const peakOmegaDegPerS = finalOmegaDegPerS;
 
   const targetAngle = finalAngleRad * 0.9;
   let deployTimeS = lastState?.time ?? 0;
@@ -113,12 +138,6 @@ function computeSingleRow(
       break;
     }
   }
-
-  let maxOmegaRad = 0;
-  for (const state of trajectory) {
-    maxOmegaRad = Math.max(maxOmegaRad, state.angularVelocity.length());
-  }
-  const peakOmegaDegPerS = MathUtils.radToDeg(maxOmegaRad);
 
   return {
     id: `${config}-${failureMode}-${material}`,

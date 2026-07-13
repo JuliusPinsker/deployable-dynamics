@@ -62,6 +62,12 @@ export interface SpacecraftState {
   _bodyQ?: Quaternion;       // body orientation quaternion
   /** Composite system CoM in body frame (metres). Populated each step. */
   comBody?: Vector3;
+  /**
+   * Time (s) at which deployment first completed (all panels deployed/stuck).
+   * `undefined` until then. Drives the post-deployment observation window during
+   * which the body keeps coasting with panels held fixed. Engine-managed.
+   */
+  _deployCompleteTime?: number;
 }
 
 export interface SimulationParams {

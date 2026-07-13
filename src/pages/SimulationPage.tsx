@@ -16,7 +16,14 @@ import {
   type SimulationParams,
   Quaternion,
 } from '@/lib/physics/types';
-import { computeEDetumble, createInitialState, stepSimulation } from '@/lib/physics/engine';
+import {
+  computeEDetumble,
+  createInitialState,
+  stepSimulation,
+  accumulateOmegaPeak,
+  EMPTY_OMEGA_PEAK,
+  type OmegaPeak,
+} from '@/lib/physics/engine';
 import { Play, RotateCcw, Pause, AlertTriangle } from 'lucide-react';
 import ThemeToggle from '@/components/ui/theme-toggle';
 
@@ -75,6 +82,11 @@ export default function SimulationPage() {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  // Peak detumbling energy reached during the current run (by peak |ω|, like reportData.ts).
+  // The live/instantaneous E_detumble correctly decays to ~0 during the post-deployment coast;
+  // this holds the peak so the demo panel doesn't look like the value "reset" to zero.
+  const peakRef = useRef<OmegaPeak>(EMPTY_OMEGA_PEAK);
+
   const configRef = useRef(config);
   configRef.current = config;
 
@@ -95,6 +107,14 @@ export default function SimulationPage() {
     let newState = st;
     for (let i = 0; i < stepsPerFrame; i++) {
       newState = stepSimulation(newState, configRef.current, currentParams);
+      // Track peak detumbling energy across every step (the peak can fall between frames).
+      const omegaRad = newState.angularVelocity.length();
+      const eInst = computeEDetumble(
+        newState.angularVelocity,
+        newState._bodyQ ?? new Quaternion(),
+        currentParams,
+      );
+      peakRef.current = accumulateOmegaPeak(peakRef.current, omegaRad, eInst);
     }
     setState(newState);
 
@@ -152,12 +172,14 @@ export default function SimulationPage() {
 
   const handleReset = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
+    peakRef.current = EMPTY_OMEGA_PEAK;
     const base = createInitialState(config);
     setState(applyFailureModeToState(base, failureMode, config));
   }, [config, failureMode, applyFailureModeToState]);
 
   const handleConfigChange = useCallback((c: ConfigType) => {
     cancelAnimationFrame(rafRef.current);
+    peakRef.current = EMPTY_OMEGA_PEAK;
     setConfig(c);
     const base = createInitialState(c);
     setState(applyFailureModeToState(base, failureMode, c));
@@ -166,6 +188,7 @@ export default function SimulationPage() {
   const handleFailureModeChange = useCallback(
     (mode: typeof failureMode) => {
       cancelAnimationFrame(rafRef.current);
+      peakRef.current = EMPTY_OMEGA_PEAK;
       setFailureMode(mode);
       const base = createInitialState(config);
       setState(applyFailureModeToState(base, mode, config));
@@ -220,6 +243,7 @@ export default function SimulationPage() {
               state._bodyQ ?? new Quaternion(),
               params,
             )}
+            peakEDetumbleMJ={peakRef.current.eDetumbleMJ}
             delayMagnitude={delayMagnitude}
             delayUnit={delayUnit}
             materialLabel={materialLabel}

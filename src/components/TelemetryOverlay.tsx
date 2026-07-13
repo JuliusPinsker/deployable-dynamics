@@ -3,10 +3,17 @@ import type { SpacecraftState } from '@/lib/physics/types';
 
 interface TelemetryOverlayProps {
   state: SpacecraftState;
+  /** Instantaneous (current-frame) detumbling energy — decays to ~0 as the body settles. */
   eDetumbleMJ?: number;
+  /** Peak detumbling energy reached so far this run — stays elevated through the coast. */
+  peakEDetumbleMJ?: number;
   delayMagnitude: number;
   delayUnit: 'ns' | 'µs' | 'ms';
   materialLabel: string;
+}
+
+function eDetumbleColorFor(value: number): string {
+  return value > 1 ? '#f97316' : value > 0.1 ? '#eab308' : '#22c55e';
 }
 
 function formatNum(n: number, decimals = 3): string {
@@ -30,6 +37,7 @@ function toDegPerSec(rad: number): string {
 export default function TelemetryOverlay({
   state,
   eDetumbleMJ,
+  peakEDetumbleMJ,
   delayMagnitude,
   delayUnit,
   materialLabel,
@@ -37,12 +45,11 @@ export default function TelemetryOverlay({
   const maxContact = Math.max(...state.panels.map(p => p.contactForce), 0);
   const avgAngle = state.panels.reduce((s, p) => s + p.angle, 0) / state.panels.length;
   const deployPct = Math.min(100, (avgAngle / (Math.PI / 2)) * 100);
+  // Live value still feeds the peak as a floor (so the reading never lags below the current
+  // instantaneous), but is no longer rendered on its own — only the peak is displayed.
   const eDetumbleValue = eDetumbleMJ ?? 0;
-  const eDetumbleColor = eDetumbleValue > 1
-    ? '#f97316'
-    : eDetumbleValue > 0.1
-    ? '#eab308'
-    : '#22c55e';
+  const peakValue = Math.max(peakEDetumbleMJ ?? 0, eDetumbleValue);
+  const peakColor = eDetumbleColorFor(peakValue);
   const delayDisplay = delayMagnitude === 0
     ? '0 (ideal sync)'
     : `${delayMagnitude} ${delayUnit}`;
@@ -85,9 +92,9 @@ export default function TelemetryOverlay({
       </div>
 
       <div className="border-t border-border pt-1 flex justify-between">
-        <span className="text-muted-foreground">E detumble</span>
-        <span className="font-mono font-semibold" style={{ color: eDetumbleColor }}>
-          {eDetumbleValue.toFixed(3)} mJ
+        <span className="text-muted-foreground">E detumble (peak)</span>
+        <span className="font-mono font-semibold" style={{ color: peakColor }}>
+          {peakValue.toFixed(3)} mJ
         </span>
       </div>
 

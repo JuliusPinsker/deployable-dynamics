@@ -27,6 +27,14 @@ import { MathUtils } from 'three';
 
 import { getPanelSpecs } from './panelLayouts';
 
+/**
+ * Post-deployment observation window (seconds). Once every panel has deployed (or
+ * stuck), the hinges stop moving but the spacecraft body keeps coasting under the
+ * existing dynamics for this long so the motion stays visible. Part of normal
+ * simulation behaviour — not a separate mode.
+ */
+const POST_DEPLOY_OBSERVATION_S = 6;
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Inertia tensor helpers (diagonal in body frame)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,6 +90,35 @@ export function computeEDetumble(
       Ib.z * omegaBody.z * omegaBody.z) *
     1000 // J → mJ
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Peak-by-|ω| tracking (shared by the report sweep and live telemetry)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Running peak of body angular-velocity magnitude, plus the detumbling energy at that peak
+ * frame. Because the body starts from rest and momentum is conserved, ω decays back to ~0 once
+ * panels stop, so a settled/last value is misleading — the meaningful figure is the peak. This
+ * is the single selection rule used both by the report sweep (`computeSingleRow`, reducing over
+ * a full trajectory) and by live Simulation-page telemetry (folding one frame at a time).
+ */
+export interface OmegaPeak {
+  /** Peak body angular-velocity magnitude seen so far (rad/s). */
+  peakOmegaRad: number;
+  /** Detumbling energy (mJ) at that peak-ω frame. */
+  eDetumbleMJ: number;
+}
+
+export const EMPTY_OMEGA_PEAK: OmegaPeak = { peakOmegaRad: 0, eDetumbleMJ: 0 };
+
+/** Fold one sample into the running peak, selecting by |ω| (ties keep the newer sample). */
+export function accumulateOmegaPeak(
+  prev: OmegaPeak,
+  omegaRad: number,
+  eDetumbleMJ: number,
+): OmegaPeak {
+  return omegaRad >= prev.peakOmegaRad ? { peakOmegaRad: omegaRad, eDetumbleMJ } : prev;
 }
 
 /**
@@ -515,6 +552,9 @@ export function createInitialState(
     time: 0,
     deploying: false,
     _bodyQ: new Quaternion(),
+    // Explicitly cleared so a fresh (or mutated re-run) state can never inherit a
+    // stale post-deployment completion time.
+    _deployCompleteTime: undefined,
   };
 }
 
@@ -875,15 +915,27 @@ export function stepSimulation(
   const e = new Euler().setFromQuaternion(qBodyNew.clone(), 'XYZ');
   const euler = new Vector3(e.x, e.y, e.z);
   const allDeployed = newPanels.every(p => p.deployed || p.stuck);
+  const newTime = state.time + dt;
+
+  // ── Post-deployment observation window ─────────────────────────────────────
+  // Once deployment completes the panels are already held fixed (per-panel branches
+  // above), but we keep `deploying` true — and thus keep integrating the body — for a
+  // short window so the attitude keeps evolving and stays visible. `_deployCompleteTime`
+  // records the completion instant and is shared by every caller (runFullSimulation loop
+  // and the SimulationPage RAF loop both key off `deploying`).
+  const deployCompleteTime = state._deployCompleteTime ?? (allDeployed ? newTime : undefined);
+  const withinObservationWindow =
+    deployCompleteTime !== undefined && newTime < deployCompleteTime + POST_DEPLOY_OBSERVATION_S;
 
   const newState: SpacecraftState = {
     angularVelocity: omegaBodyNew,
     angularAcceleration: alphaWorld,
     orientation: euler,
     panels: newPanels,
-    time: state.time + dt,
-    deploying: !allDeployed,
+    time: newTime,
+    deploying: !allDeployed || withinObservationWindow,
     _bodyQ: qBodyNew,
+    _deployCompleteTime: deployCompleteTime,
   };
 
   // Compute the composite system CoM for the newly assembled state so the
@@ -1022,7 +1074,10 @@ export function runFullSimulation(
       });
     }
 
-    if (!state.deploying && state.time > 0.5) break;
+    // `deploying` now stays true through the post-deployment observation window, so this
+    // fires only once the window closes; the `maxSteps` loop bound still caps at `maxTime`
+    // (deployments that never complete keep the existing maxTime behaviour).
+    if (!state.deploying) break;
   }
 
   return frames;
@@ -1117,6 +1172,10 @@ export function computeReportData(
     eDetumbleMJ: round3(last?.eDetumble ?? 0),
     maxAngularVelocityDeg: round3(maxAngularVelocityDeg),
     comOffsetMm: round3(comOffsetMm),
+    // NOTE: with the post-deployment observation window, `last.time` is the window-end
+    // time (deployment end + up to POST_DEPLOY_OBSERVATION_S), NOT the deployment-end
+    // time. This function is currently unused by the UI (the UI uses reportData.ts); do
+    // not wire it into UI deploy-time displays without accounting for the shift.
     deploymentTimeS: round3(last?.time ?? 0),
   };
 }

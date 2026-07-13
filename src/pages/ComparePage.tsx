@@ -40,6 +40,28 @@ const FAILURE_SCENARIO_TEXT: Record<FailureAnomalyType, string> = {
   'all-stuck': 'Catastrophic Failure: All panels locked — deployment aborted, CubeSat remains in tumble state',
 };
 
+/**
+ * Index at which to cut a trajectory so the charts end at the deployment settle point,
+ * trimming the post-deployment observation-window tail (during which the engine keeps the
+ * body coasting while panels are held fixed, so `time` now advances instead of freezing).
+ *
+ * Uses a tolerance band around the final (held) panel angle and returns just past the LAST
+ * frame still outside the band — robust to overshoot/ringing (kinematic ease-out is
+ * monotonic today, but a physics-driven/bistable hinge could oscillate). Configs that never
+ * move (e.g. all-stuck) return 1, matching the previous near-t=0 deploy-time behaviour.
+ */
+export function deploymentSettleCut(frames: SimulationFrame[]): number {
+  const finalAngles = frames.at(-1)?.panelAngles ?? [];
+  const finalMax = finalAngles.length ? Math.max(...finalAngles) : 0;
+  const tol = Math.max(1e-4, 0.001 * finalMax);
+  let lastMoving = -1;
+  for (let k = 0; k < frames.length; k++) {
+    const m = frames[k].panelAngles.length ? Math.max(...frames[k].panelAngles) : 0;
+    if (Math.abs(m - finalMax) > tol) lastMoving = k; // still deploying / oscillating
+  }
+  return lastMoving >= 0 ? Math.min(frames.length, lastMoving + 3) : 1; // +3 settle buffer
+}
+
 
 export default function ComparePage() {
   const location = useLocation();
@@ -121,14 +143,11 @@ export default function ComparePage() {
         },
       };
       const frames = runFullSimulation(c, params, 2, resolvedStuck);
-      // stepSimulation freezes state.time once deployment ends (engine caps the early-exit at
-      // time > 0.5s), padding the series with duplicate-time frames that make the shared chart
-      // x-axis non-monotonic. Trim the frozen tail so each config ends at its true settle time.
-      let cut = frames.length;
-      for (let k = 1; k < frames.length; k++) {
-        if (frames[k].time <= frames[k - 1].time) { cut = k; break; }
-      }
-      results[c] = frames.slice(0, cut);
+      // The engine keeps the body coasting through a post-deployment observation window, so
+      // `time` advances monotonically instead of freezing at settle. Trim to the deployment
+      // window via panel-angle settle detection so the shared chart x-axis and deploy-time
+      // metric stay focused on deployment (not the coast tail).
+      results[c] = frames.slice(0, deploymentSettleCut(frames));
     }
     return results;
   }, [stuckConfig, navPanelMass, delaySeconds]);
