@@ -14,17 +14,15 @@ function v3Mag(v: Vector3): number {
   return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
-// Physics-driven params (no kinematic override), zero friction for clean conservation
+// Physics-driven hinge dynamics (the engine's only deployment model), zero
+// friction for clean conservation.
 const PHYSICS_PARAMS: SimulationParams = {
   ...DEFAULT_PARAMS,
   hinge: {
     ...DEFAULT_PARAMS.hinge,
-    deployDuration: undefined as unknown as number, // force physics mode (falsy → 0)
     frictionCoeff: 0,        // zero friction for momentum conservation
   },
 };
-// Ensure deployDuration is 0 (falsy) so the engine uses physics-driven mode
-delete (PHYSICS_PARAMS.hinge as Record<string, unknown>).deployDuration;
 
 describe('computeTotalAngularMomentum', () => {
   it('returns zero vector for a system at rest', () => {
@@ -71,8 +69,9 @@ describe('angular momentum conservation (physics-driven mode)', () => {
     const H0 = computeTotalAngularMomentum(state, config, PHYSICS_PARAMS);
     const H0mag = v3Mag(H0);
 
-    // Step for 60 frames (1 second)
-    for (let i = 0; i < 60; i++) {
+    // Step for 1 second of simulated time (step count derives from the timestep)
+    const oneSecondSteps = Math.round(1 / PHYSICS_PARAMS.timeStep);
+    for (let i = 0; i < oneSecondSteps; i++) {
       state = stepSimulation(state, config, PHYSICS_PARAMS);
     }
 
@@ -92,8 +91,9 @@ describe('angular momentum conservation (physics-driven mode)', () => {
     const H0 = computeTotalAngularMomentum(state, config, PHYSICS_PARAMS);
     const H0mag = v3Mag(H0);
 
-    // Step for 120 frames (2 seconds)
-    for (let i = 0; i < 120; i++) {
+    // Step for 2 seconds of simulated time (step count derives from the timestep)
+    const twoSecondSteps = Math.round(2 / PHYSICS_PARAMS.timeStep);
+    for (let i = 0; i < twoSecondSteps; i++) {
       state = stepSimulation(state, config, PHYSICS_PARAMS);
     }
 

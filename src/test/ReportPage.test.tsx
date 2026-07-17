@@ -9,6 +9,8 @@ vi.mock('jspdf', () => {
     setFontSize: vi.fn(),
     setFont: vi.fn(),
     text: vi.fn(),
+    setDrawColor: vi.fn(),
+    line: vi.fn(),
     autoTable: vi.fn(),
     save: vi.fn(),
     internal: { pageSize: { getWidth: () => 210, getHeight: () => 297 } },
@@ -27,6 +29,8 @@ const WrappedReportPage = () => (
 );
 
 describe('ReportPage', () => {
+  // The 48-row sweep runs full physics-driven simulations (~4 s alone, longer
+  // under parallel-worker CPU contention), so give the first render generous room.
   it('renders 48 scenario rows', async () => {
     render(<WrappedReportPage />);
 
@@ -35,16 +39,16 @@ describe('ReportPage', () => {
         const rows = screen.getAllByTestId('report-row');
         expect(rows).toHaveLength(48);
       },
-      { timeout: 15000 },
+      { timeout: 80000 },
     );
-  });
+  }, 90000);
 
   it('exports the report to PDF', async () => {
     render(<WrappedReportPage />);
 
     await waitFor(
       () => screen.getAllByTestId('report-row'),
-      { timeout: 15000 },
+      { timeout: 80000 },
     );
 
     const exportBtn = screen.getByRole('button', { name: /export pdf/i });
@@ -52,5 +56,5 @@ describe('ReportPage', () => {
 
     const { jsPDF } = await import('jspdf');
     expect(jsPDF).toHaveBeenCalled();
-  });
+  }, 90000);
 });

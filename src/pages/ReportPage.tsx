@@ -1,11 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import jsPDFDefault, { jsPDF as jsPDFNamed } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { motion } from 'framer-motion';
 import { MathUtils } from 'three';
 import {
-  getFilteredRows,
+  generate48RowsAsync,
+  filterRows,
   computeSummaryStats,
   REPORT_CONFIGS,
   REPORT_FAILURES,
@@ -38,9 +39,25 @@ export function ReportPage() {
   const [selectedFailures, setSelectedFailures] = useState<FailureMode[]>(REPORT_FAILURES);
   const [selectedMaterials, setSelectedMaterials] = useState<PanelMaterial[]>(REPORT_MATERIALS);
 
+  // The 48-scenario physics sweep takes ~27 s on first load (cached afterwards),
+  // so it runs asynchronously — one scenario per event-loop turn — with progress
+  // shown instead of freezing the page. Filter changes never re-run physics.
+  const [allRows, setAllRows] = useState<ReportRow[] | null>(null);
+  const [genProgress, setGenProgress] = useState({ done: 0, total: 48 });
+
+  useEffect(() => {
+    let cancelled = false;
+    generate48RowsAsync((done, total) => {
+      if (!cancelled) setGenProgress({ done, total });
+    }).then(rows => {
+      if (!cancelled) setAllRows(rows);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   const filteredRows = useMemo(
-    () => getFilteredRows(selectedConfigs, selectedFailures, selectedMaterials),
-    [selectedConfigs, selectedFailures, selectedMaterials],
+    () => (allRows ? filterRows(allRows, selectedConfigs, selectedFailures, selectedMaterials) : []),
+    [allRows, selectedConfigs, selectedFailures, selectedMaterials],
   );
 
   const stats = useMemo(
@@ -248,8 +265,18 @@ export function ReportPage() {
     doc.setFontSize(9);
     doc.setFont('helvetica', 'italic');
     doc.text(
-      'Tumble onset coincides with deployment start (t = 0 s). Peak body rate reached at t = '
-        + `${deployTimeS.toFixed(3)} s. Prevention window: ${deployTimeS.toFixed(3)} s.`,
+      'Tumble onset coincides with deployment start (t = 0 s). Worst-case calculated deployment time '
+        + `t90 = ${deployTimeS.toFixed(3)} s (first reach of 90% of the deployed panel angle - the `
+        + 'same t_deploy,90 metric as the table). Prevention window, defined on that metric: '
+        + `${deployTimeS.toFixed(3)} s.`,
+      14,
+      y,
+    );
+    y += 6;
+    doc.text(
+      'Method note: physics-driven torsional-hinge simulation (fixed 1/1200 s timestep); default hinge '
+        + 'k/c are a sensitivity-tested engineering calibration (see src/lib/physics/calibration.ts), '
+        + 'pending component-level torsion-spring and deployment testing.',
       14,
       y,
     );
@@ -284,7 +311,7 @@ export function ReportPage() {
         'theta_final (deg)',
         'w_final (deg/s)',
         'E_det (mJ)',
-        't_deploy (s)',
+        't_deploy,90 (s)',
         'w_peak (deg/s)',
       ]],
       body: tableBody,
@@ -325,11 +352,32 @@ export function ReportPage() {
           <Button variant="outline" onClick={() => navigate('/compare')}>
             Back to Compare
           </Button>
-          <Button onClick={exportToPDF} disabled={isExporting}>
+          <Button onClick={exportToPDF} disabled={isExporting || !allRows}>
             {isExporting ? 'Exporting...' : 'Export PDF'}
           </Button>
         </div>
       </div>
+
+      {!allRows && (
+        <Card className="mb-6">
+          <CardContent className="py-4">
+            <div className="text-sm font-medium">
+              Running physics-driven scenario sweep… {genProgress.done}/{genProgress.total}
+            </div>
+            <div className="w-full bg-secondary rounded-full h-1.5 mt-2">
+              <div
+                className="bg-primary h-1.5 rounded-full transition-all"
+                style={{ width: `${(genProgress.done / Math.max(1, genProgress.total)) * 100}%` }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Each of the 48 scenarios (4 configs × 4 failure modes × 3 materials) runs the full
+              torsional-hinge dynamics at the fixed 1/1200 s physics timestep. Results are cached
+              for this session.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="mb-6">
         <CardHeader>
@@ -425,7 +473,7 @@ export function ReportPage() {
             </div>
           </div>
           <div>
-            <div className="text-xs uppercase text-muted-foreground">Mean Deploy Time</div>
+            <div className="text-xs uppercase text-muted-foreground">Mean Deploy Time (t₉₀)</div>
             <div className="text-xl font-semibold">
               {formatNumber(stats.meanDeployTimeS, 3)} s
             </div>
@@ -491,8 +539,23 @@ export function ReportPage() {
 
           <div className="rounded-lg border bg-card p-4 text-sm">
             Tumble onset coincides with deployment start (t = 0 s). For the worst-case scenario,
-            peak body rate is reached at t = {deployTimeS.toFixed(3)} s when deployment completes.
-            Prevention window: {deployTimeS.toFixed(3)} s.
+            the calculated deployment time is t₉₀ = {deployTimeS.toFixed(3)} s — the first reach
+            of 90% of the deployed panel angle, the same t_deploy,90 metric reported per scenario
+            below (stop capture/latch occurs slightly later and is a different quantity).
+            Prevention window, defined on that same metric: {deployTimeS.toFixed(3)} s.
+          </div>
+
+          <div className="rounded-lg border bg-card p-4 text-xs text-muted-foreground">
+            <span className="font-semibold text-foreground">Methodology &amp; limitations.</span>{' '}
+            All results come from the physics-driven torsional spring-damper hinge simulation
+            (deterministic fixed 1/1200 s timestep); deployment times are emergent simulation
+            results, never prescribed. t_deploy,90 = first reach of 90% of the deployed angle.
+            The default hinge stiffness and damping (k = 4.45e-4 N·m/rad, c = 2.23e-4 N·m·s/rad,
+            free-travel ζ ≈ 0.30) are a sensitivity-tested engineering calibration
+            (grid sweep in src/lib/physics/calibration.ts) — not vendor-qualified hinge values —
+            pending component-level torsion-spring and deployment testing. Angular momentum is
+            enforced by an iterative correction step; conservation figures are numerical
+            diagnostics of this model, not flight-qualified claims.
           </div>
         </CardContent>
       </Card>
@@ -513,7 +576,7 @@ export function ReportPage() {
                   <th className="text-right py-2 pr-4">theta_final (deg)</th>
                   <th className="text-right py-2 pr-4">w_final (deg/s)</th>
                   <th className="text-right py-2 pr-4">E_det (mJ)</th>
-                  <th className="text-right py-2 pr-4">t_deploy (s)</th>
+                  <th className="text-right py-2 pr-4">t_deploy,90 (s)</th>
                   <th className="text-right py-2">w_peak (deg/s)</th>
                 </tr>
               </thead>

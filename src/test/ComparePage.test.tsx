@@ -113,16 +113,47 @@ describe('ComparePage failure scenario phases', () => {
 
     selectScenario('All panels stuck (total failure)');
 
+    // Sim data is generated asynchronously (one config per event-loop turn) and a
+    // superseded selection cancels its remaining runs, so total call counts vary —
+    // assert on the LAST full batch instead of an exact global count.
     await waitFor(() => {
-      expect(runFullSimulationMock).toHaveBeenCalledTimes(8);
+      const latestCalls = runFullSimulationMock.mock.calls.slice(-4);
+      expect(latestCalls).toHaveLength(4);
+      for (const call of latestCalls) {
+        expect(call[3]).toEqual([0, 1, 2, 3, 4, 5]);
+      }
+    });
+  });
+
+  it('material selector change regenerates all runs with the new panelMass (no stale results)', async () => {
+    const { container } = render(
+      <MemoryRouter>
+        <ComparePage />
+      </MemoryRouter>,
+    );
+
+    // Initial batch runs with the default FR4 mass (0.032 kg).
+    await waitFor(() => {
+      const latest = runFullSimulationMock.mock.calls.slice(-4);
+      expect(latest).toHaveLength(4);
+      for (const call of latest) {
+        expect((call[1] as { panelMass: number }).panelMass).toBeCloseTo(0.032, 9);
+      }
     });
 
-    const latestCalls = runFullSimulationMock.mock.calls.slice(-4);
-    expect(latestCalls).toHaveLength(4);
+    fireEvent.click(screen.getByRole('radio', { name: /CFRP/i }));
 
-    for (const call of latestCalls) {
-      expect(call[3]).toEqual([0, 1, 2, 3, 4, 5]);
-    }
+    // Every configuration is recomputed with the CFRP mass (0.020 kg).
+    await waitFor(() => {
+      const latest = runFullSimulationMock.mock.calls.slice(-4);
+      expect(latest).toHaveLength(4);
+      for (const call of latest) {
+        expect((call[1] as { panelMass: number }).panelMass).toBeCloseTo(0.020, 9);
+      }
+    });
+
+    // The visible material label (name + mass) updated with the selection.
+    expect(container.textContent).toContain('CFRP Composite (20 g/panel)');
   });
 
   it.each([

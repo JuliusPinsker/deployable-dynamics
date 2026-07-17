@@ -3,7 +3,13 @@ import { useLocation } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
-import { CONFIGURATIONS, DEFAULT_PARAMS, MATERIAL_PRESETS, type ConfigType } from '@/lib/physics/types';
+import {
+  CONFIGURATIONS,
+  DEFAULT_PARAMS,
+  MATERIAL_PRESETS,
+  type ConfigType,
+  type MaterialPresetKey,
+} from '@/lib/physics/types';
 import { runFullSimulation, type SimulationFrame } from '@/lib/physics/engine';
 import {
   ChartContainer,
@@ -46,9 +52,12 @@ const FAILURE_SCENARIO_TEXT: Record<FailureAnomalyType, string> = {
  * body coasting while panels are held fixed, so `time` now advances instead of freezing).
  *
  * Uses a tolerance band around the final (held) panel angle and returns just past the LAST
- * frame still outside the band — robust to overshoot/ringing (kinematic ease-out is
- * monotonic today, but a physics-driven/bistable hinge could oscillate). Configs that never
- * move (e.g. all-stuck) return 1, matching the previous near-t=0 deploy-time behaviour.
+ * frame still outside the band — robust to overshoot/ringing (the calibrated lightly
+ * damped hinge arrives at the stop with momentum; a bistable hinge could oscillate).
+ * Configs that never move (e.g. all-stuck) return 1, matching the previous near-t=0
+ * deploy-time behaviour. NOTE: the resulting cut marks the deployment SETTLE point
+ * (panel motion complete) — a different quantity from the report's t_deploy,90 metric
+ * (first reach of 90% of the deployed angle).
  */
 export function deploymentSettleCut(frames: SimulationFrame[]): number {
   const finalAngles = frames.at(-1)?.panelAngles ?? [];
@@ -75,9 +84,14 @@ export default function ComparePage() {
     { label: 'Nominal (250 µs)', magnitude: 250, unit: 'µs' },
     { label: 'Worst-case (5 ms)', magnitude: 5, unit: 'ms' },
   ] as const;
+  // Router state from the Landing page only SEEDS the on-page selector (header
+  // links drop router state, so the page owns material selection).
   const navPanelMass = (location.state as { panelMass?: number } | null)?.panelMass
     ?? DEFAULT_PARAMS.panelMass;
-  const activeMaterial = MATERIAL_PRESETS.find(preset => preset.panelMass === navPanelMass)?.label ?? 'Custom';
+  const [materialKey, setMaterialKey] = useState<MaterialPresetKey>(
+    MATERIAL_PRESETS.find(preset => preset.panelMass === navPanelMass)?.key ?? 'fr4',
+  );
+  const activeMaterial = MATERIAL_PRESETS.find(preset => preset.key === materialKey)!;
 
   const stuckConfig = useMemo(() => {
     switch (anomaly) {
@@ -123,37 +137,62 @@ export default function ComparePage() {
     });
   }, [stuckConfig]);
 
-  const allSimData = useMemo(() => {
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    const results: Record<ConfigType, SimulationFrame[]> = {} as any;
-    const resolvedStuck = stuckConfig ?? [];
+  // Physics-driven comparison runs for the SELECTED material, computed in an
+  // effect (one config per event-loop turn) with a computing badge instead of
+  // freezing the page. The `cancelled` flag guarantees a superseded selection
+  // (material/δt/anomaly change) can never overwrite newer results with stale
+  // ones.
+  const [allSimData, setAllSimData] =
+    useState<Record<ConfigType, SimulationFrame[]> | null>(null);
+  const [computing, setComputing] = useState(true);
 
-    for (const c of configs) {
-      // Sequential burn-wire release: panel i fires at i × δt (Bug 3), per config's panel count.
-      // Deployment uses the kinematic-staging default (Bug 4: deployDuration = 0.4s) inherited from
-      // DEFAULT_PARAMS.hinge — the only model that settles in ~0.4s and makes δt coupling visible.
-      const panelCount = CONFIGURATIONS.find(cfg => cfg.id === c)?.panelCount ?? 2;
-      const panelStartDelays = Array.from({ length: panelCount }, (_, i) => i * delaySeconds);
-      const params = {
-        ...DEFAULT_PARAMS,
-        panelMass: navPanelMass,
-        hinge: {
-          ...DEFAULT_PARAMS.hinge,
-          panelStartDelays,
-        },
-      };
-      const frames = runFullSimulation(c, params, 2, resolvedStuck);
-      // The engine keeps the body coasting through a post-deployment observation window, so
-      // `time` advances monotonically instead of freezing at settle. Trim to the deployment
-      // window via panel-angle settle detection so the shared chart x-axis and deploy-time
-      // metric stay focused on deployment (not the coast tail).
-      results[c] = frames.slice(0, deploymentSettleCut(frames));
-    }
-    return results;
-  }, [stuckConfig, navPanelMass, delaySeconds]);
+  useEffect(() => {
+    let cancelled = false;
+    setComputing(true);
+    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
+    const results: Record<ConfigType, SimulationFrame[]> = {} as Record<ConfigType, SimulationFrame[]>;
+    const resolvedStuck = stuckConfig ?? [];
+    const panelMass = activeMaterial.panelMass;
+
+    (async () => {
+      for (const c of configs) {
+        // Yield to the event loop before each config so rendering stays live.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (cancelled) return;
+        // Sequential burn-wire release: panel i fires at i × δt, per config's panel count.
+        // Deployment is physics-driven (calibrated torsional spring-damper hinge from
+        // DEFAULT_PARAMS) — the same authoritative dynamics used by the Report sweep.
+        // The horizon is a CAP: each run ends once all panels latch (plus the observation
+        // window); the slowest 3-stage coupled config completes in ~12 s of simulated time.
+        const panelCount = CONFIGURATIONS.find(cfg => cfg.id === c)?.panelCount ?? 2;
+        const panelStartDelays = Array.from({ length: panelCount }, (_, i) => i * delaySeconds);
+        const params = {
+          ...DEFAULT_PARAMS,
+          panelMass,
+          hinge: {
+            ...DEFAULT_PARAMS.hinge,
+            panelStartDelays,
+          },
+        };
+        const frames = runFullSimulation(c, params, 90, resolvedStuck);
+        // The engine keeps the body coasting through a post-deployment observation window, so
+        // `time` advances monotonically instead of freezing at settle. Trim to the deployment
+        // window via panel-angle settle detection so the shared chart x-axis and deploy-time
+        // metric stay focused on deployment (not the coast tail).
+        results[c] = frames.slice(0, deploymentSettleCut(frames));
+      }
+      if (!cancelled) {
+        setAllSimData(results);
+        setComputing(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [stuckConfig, activeMaterial.panelMass, delaySeconds]);
 
   // Merge data for angular velocity chart
   const angVelData = useMemo(() => {
+    if (!allSimData) return [];
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
     const maxLen = Math.max(...configs.map(c => allSimData[c].length));
     const data: any[] = [];
@@ -178,6 +217,7 @@ export default function ComparePage() {
 
   // Detumbling energy over time (mJ)
   const eDetumbleData = useMemo(() => {
+    if (!allSimData) return [];
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
     const maxLen = Math.max(...configs.map(c => allSimData[c].length));
     const data: any[] = [];
@@ -199,7 +239,7 @@ export default function ComparePage() {
   const peakAccelData = useMemo(() => {
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
     return configs.map((c, i) => {
-      const frames = allSimData[c];
+      const frames = allSimData?.[c] ?? [];
       let peakAccel = 0;
       for (const f of frames) {
         const total = Math.sqrt(f.angularAcceleration.x ** 2 + f.angularAcceleration.y ** 2 + f.angularAcceleration.z ** 2);
@@ -217,7 +257,7 @@ export default function ComparePage() {
   const deployTimeData = useMemo(() => {
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
     return configs.map((c, i) => {
-      const frames = allSimData[c];
+      const frames = allSimData?.[c] ?? [];
       const lastFrame = frames[frames.length - 1];
       return {
         name: CONFIGURATIONS[i].shortName,
@@ -248,11 +288,37 @@ export default function ComparePage() {
           <div>
             <h1 className="text-2xl font-bold">Configuration Comparison</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Quantitative comparison of deployment dynamics across all 4 configurations
+              Quantitative comparison of deployment dynamics across all 4 configurations —
+              computed for ONE selected panel material at a time
             </p>
-            <span className="text-sm text-muted-foreground">Material: {activeMaterial}</span>
+            <span className="text-sm text-muted-foreground">
+              Material: {activeMaterial.label} ({activeMaterial.massGrams} g/panel)
+              {computing && (
+                <span className="ml-2 text-xs text-primary animate-pulse">
+                  computing physics runs…
+                </span>
+              )}
+            </span>
           </div>
           <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1" role="radiogroup" aria-label="Panel material">
+              {MATERIAL_PRESETS.map(preset => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={materialKey === preset.key}
+                  onClick={() => setMaterialKey(preset.key)}
+                  className={`px-2.5 py-1.5 rounded-md text-xs border transition-colors ${
+                    materialKey === preset.key
+                      ? 'border-primary bg-primary/10 text-foreground'
+                      : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
+                  }`}
+                >
+                  {preset.label} · {preset.massGrams} g
+                </button>
+              ))}
+            </div>
             <Select value={anomaly} onValueChange={(value) => setAnomaly(value as AnomalyType)}>
               <SelectTrigger className="w-48">
                 <SelectValue placeholder="Anomaly scenario" />
@@ -333,7 +399,11 @@ export default function ComparePage() {
           <p className="text-[11px] text-muted-foreground max-w-md">
             δt staggers burn-wire release (panel i fires at i·δt): at δt = 0 the panel-pair
             reactions cancel and the body stays at rest; at δt &gt; 0 the symmetry breaks and the
-            body gains angular velocity. Panels deploy over the {DEFAULT_PARAMS.hinge.deployDuration}s default.
+            body gains angular velocity. Deployment is physics-driven (torsional spring hinge).
+            Timing resolution = the fixed physics timestep of
+            {' '}{(DEFAULT_PARAMS.timeStep * 1000).toFixed(2)} ms (1/1200 s): release times snap
+            to the next step boundary — a 5 ms δt is honoured to within one step; values below
+            one step quantise to zero.
           </p>
         </div>
 
@@ -423,10 +493,14 @@ export default function ComparePage() {
             </CardContent>
           </Card>
 
-          {/* Deployment Time */}
+          {/* Deployment settle time */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Deployment Time (s)</CardTitle>
+              <CardTitle className="text-sm">Deployment Settle Time (s)</CardTitle>
+              <p className="text-[11px] text-muted-foreground">
+                Time until all panel motion settles (stop capture) — not the report&apos;s
+                t_deploy,90 metric (first reach of 90% of the deployed angle).
+              </p>
             </CardHeader>
             <CardContent>
               <ChartContainer config={chartConfig} className="h-[250px]">
@@ -454,12 +528,12 @@ export default function ComparePage() {
                       <th className="text-left py-2 text-muted-foreground font-medium">Config</th>
                       <th className="text-right py-2 text-muted-foreground font-medium">Panels</th>
                       <th className="text-right py-2 text-muted-foreground font-medium">Peak ω (°/s)</th>
-                      <th className="text-right py-2 text-muted-foreground font-medium">T_deploy (s)</th>
+                      <th className="text-right py-2 text-muted-foreground font-medium">T_settle (s)</th>
                     </tr>
                   </thead>
                   <tbody>
                     {CONFIGURATIONS.map((c, i) => {
-                      const frames = allSimData[c.id];
+                      const frames = allSimData?.[c.id] ?? [];
                       let peakOmega = 0;
                       for (const f of frames) {
                         const omega = Math.sqrt(f.angularVelocity.x ** 2 + f.angularVelocity.y ** 2 + f.angularVelocity.z ** 2);

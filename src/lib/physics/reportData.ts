@@ -72,18 +72,24 @@ function resolveStuckPanels(config: SimulationConfig, failureMode: FailureMode):
 }
 
 function buildParams(panelMass: number): SimulationParams {
+  // Physics-driven torsional-hinge dynamics only — the scientific report must
+  // never run a prescribed-motion profile. Material panel mass is the only
+  // per-row override; it flows into panel inertia, momentum, and CoM.
   return {
     ...DEFAULT_PARAMS,
     panelMass,
-    hinge: {
-      ...DEFAULT_PARAMS.hinge,
-      deployDuration: 2,
-    },
+    hinge: { ...DEFAULT_PARAMS.hinge },
   };
 }
 
-/** Simulation horizon (seconds) used for every report scenario row. */
-export const REPORT_MAX_TIME = 8;
+/**
+ * Simulation horizon CAP (seconds) for every report scenario row. Runs end as
+ * soon as all panels latch deployed/stuck plus the post-deployment observation
+ * window, so this only bounds pathological cases. Under the calibrated default
+ * hinge the slowest (3-stage coupled) configuration completes in ~6 s of
+ * simulated time (~12 s including the observation window).
+ */
+export const REPORT_MAX_TIME = 90;
 
 /**
  * Build the exact inputs and trajectory a report row is derived from. Exposed so tests
@@ -129,6 +135,10 @@ export function computeSingleRow(
   const eDetumbleMJ = peak.eDetumbleMJ;
   const peakOmegaDegPerS = finalOmegaDegPerS;
 
+  // Calculated deployment time t₉₀: first recorded frame at/after 90% of the
+  // final (deployed) panel angle — the scientific deployment-time metric used
+  // across the report and UI. This is NOT the latch/settle time (stop capture
+  // happens later); it is an emergent simulation result, never prescribed.
   const targetAngle = finalAngleRad * 0.9;
   let deployTimeS = lastState?.time ?? 0;
   for (const state of trajectory) {
@@ -153,16 +163,70 @@ export function computeSingleRow(
   };
 }
 
-export function generate48Rows(): ReportRow[] {
-  const rows: ReportRow[] = [];
+// The 48 rows are deterministic (fixed configs × failures × materials, no user
+// inputs), so compute them once per session; filter changes reuse the cache and
+// the physics-driven sweeps (~27 s total at the 1/1200 s timestep) never re-run.
+let cachedRows: ReportRow[] | null = null;
+
+function reportCombos(): Array<[SimulationConfig, FailureMode, PanelMaterial]> {
+  const combos: Array<[SimulationConfig, FailureMode, PanelMaterial]> = [];
   for (const config of REPORT_CONFIGS) {
     for (const failureMode of REPORT_FAILURES) {
       for (const material of REPORT_MATERIALS) {
-        rows.push(computeSingleRow(config, failureMode, material));
+        combos.push([config, failureMode, material]);
       }
     }
   }
-  return rows.sort((a, b) => a.id.localeCompare(b.id));
+  return combos;
+}
+
+export function generate48Rows(): ReportRow[] {
+  if (cachedRows) return cachedRows;
+  const rows = reportCombos().map(([config, failureMode, material]) =>
+    computeSingleRow(config, failureMode, material),
+  );
+  cachedRows = rows.sort((a, b) => a.id.localeCompare(b.id));
+  return cachedRows;
+}
+
+/**
+ * Async variant for the browser: computes one scenario per event-loop turn so the
+ * page can render progress and stay responsive during the ~27 s full-physics sweep
+ * (worst single scenario ≈ 1.7 s — the 3-stage coupled config). Same rows, same
+ * cache as generate48Rows; identical physics fidelity.
+ */
+export async function generate48RowsAsync(
+  onProgress?: (done: number, total: number) => void,
+): Promise<ReportRow[]> {
+  if (cachedRows) {
+    onProgress?.(cachedRows.length, cachedRows.length);
+    return cachedRows;
+  }
+  const combos = reportCombos();
+  const rows: ReportRow[] = [];
+  for (let i = 0; i < combos.length; i++) {
+    const [config, failureMode, material] = combos[i];
+    rows.push(computeSingleRow(config, failureMode, material));
+    onProgress?.(i + 1, combos.length);
+    // Yield to the event loop between scenarios so rendering/input stay live.
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  cachedRows = rows.sort((a, b) => a.id.localeCompare(b.id));
+  return cachedRows;
+}
+
+/** Pure filter over already-generated rows (no simulation work). */
+export function filterRows(
+  allRows: ReportRow[],
+  configs: SimulationConfig[] | null,
+  failures: FailureMode[] | null,
+  materials: PanelMaterial[] | null,
+): ReportRow[] {
+  return allRows.filter(row =>
+    (!configs || configs.length === 0 || configs.includes(row.config)) &&
+    (!failures || failures.length === 0 || failures.includes(row.failureMode)) &&
+    (!materials || materials.length === 0 || materials.includes(row.material)),
+  );
 }
 
 export function getFilteredRows(
@@ -170,12 +234,7 @@ export function getFilteredRows(
   failures: FailureMode[] | null,
   materials: PanelMaterial[] | null,
 ): ReportRow[] {
-  const allRows = generate48Rows();
-  return allRows.filter(row =>
-    (!configs || configs.length === 0 || configs.includes(row.config)) &&
-    (!failures || failures.length === 0 || failures.includes(row.failureMode)) &&
-    (!materials || materials.length === 0 || materials.includes(row.material)),
-  );
+  return filterRows(generate48Rows(), configs, failures, materials);
 }
 
 export interface SummaryStats {
