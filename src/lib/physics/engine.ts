@@ -11,17 +11,13 @@
 
 import {
   type ConfigType,
-  type FailureModeKey,
-  type MaterialPresetKey,
   type SimulationParams,
   type SpacecraftState,
   type PanelState,
-  CONFIGURATIONS,
   Vector3,
   Quaternion,
   Euler,
   DEFAULT_PARAMS,
-  MATERIAL_PRESETS,
 } from './types';
 import { MathUtils } from 'three';
 
@@ -34,6 +30,30 @@ import { getPanelSpecs } from './panelLayouts';
  * simulation behaviour — not a separate mode.
  */
 const POST_DEPLOY_OBSERVATION_S = 6;
+
+/**
+ * Settle margin (rad) for the deployment-completion latch, on top of the
+ * (capped) Coulomb-friction dead-band. A frictional hinge can stall where the
+ * spring torque drops to the friction torque — θ_rest = θ_stop − τ_f/k_eff —
+ * strictly short of the stop, so completion is detected at rest near the stop
+ * rather than at θ_stop exactly. Detection only: it does not alter the hinge
+ * dynamics. ≈ 0.57°.
+ */
+const DEPLOY_LATCH_MARGIN_RAD = 0.01;
+
+/**
+ * Cap (rad, ≈ 2°) on the friction dead-band used by the completion latch.
+ * With a soft spring, the raw dead-band τ_f/k_eff can span tens of degrees;
+ * an uncapped latch then fires far from the stop and snaps the panel through
+ * a large angle (measured up to ~65° in the calibration sweep —
+ * calibration.ts), silently faking completion. With the cap, the latch can
+ * only engage close to the stop: a panel that genuinely stalls further out
+ * (insufficient spring energy against friction) is honestly reported as an
+ * incomplete deployment instead of being teleported to the stop. The cap
+ * comfortably covers the post-contact friction rest distance of the
+ * calibrated underdamped hinge (≲ 1.6°).
+ */
+const DEPLOY_LATCH_MAX_DEADBAND_RAD = 0.035;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Inertia tensor helpers (diagonal in body frame)
@@ -136,6 +156,55 @@ function panelInertiaDiag(m: number, L: number, W: number, t: number): Vector3 {
     (1 / 3) * m * L * L + (1 / 12) * m * W * W,
     (1 / 3) * m * L * L + (1 / 12) * m * t * t,
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Per-(params, config) panel kinematics cache
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Step-invariant per-panel quantities: layout spec plus the mounting quaternion,
+ * hinge axes, and inertia tensor derived from it. These depend only on the
+ * geometry/material in `params` (never on the dynamic state), but were being
+ * rebuilt — including Euler-angle trigonometry — several times per physics step.
+ * At the 1/1200 s physics timestep that reconstruction dominated the hot loop.
+ *
+ * Cached per params-object identity (WeakMap): callers construct a fresh params
+ * object whenever a value changes (React useMemo / test spreads), so identity
+ * keying cannot serve stale data. Params must be treated as immutable after
+ * first use by the engine — matching existing usage everywhere.
+ *
+ * Consumers must NOT mutate the returned vectors/quaternions (engine code
+ * always `.clone()`s before applying rotations).
+ */
+interface PanelKinematics {
+  spec: ReturnType<typeof getPanelSpecs>[number];
+  qMount: Quaternion;   // mounting rotation from spec.rot (local → body frame)
+  aLocal: Vector3;      // hinge axis, local frame (unit)
+  aBody: Vector3;       // hinge axis, body frame (qMount-rotated, unit)
+  Ip: Vector3;          // diagonal panel inertia about the hinge edge (uses params.panelMass)
+}
+
+const kinematicsCache = new WeakMap<SimulationParams, Map<ConfigType, PanelKinematics[]>>();
+
+function getPanelKinematics(config: ConfigType, params: SimulationParams): PanelKinematics[] {
+  let byConfig = kinematicsCache.get(params);
+  if (!byConfig) {
+    byConfig = new Map();
+    kinematicsCache.set(params, byConfig);
+  }
+  let kin = byConfig.get(config);
+  if (!kin) {
+    kin = getPanelSpecs(config, params).map(spec => {
+      const qMount = new Quaternion().setFromEuler(new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'));
+      const aLocal = hingeAxisUnit(spec.axis).normalize();
+      const aBody = aLocal.clone().applyQuaternion(qMount.clone());
+      const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
+      return { spec, qMount, aLocal, aBody, Ip };
+    });
+    byConfig.set(config, kin);
+  }
+  return kin;
 }
 
 /**
@@ -297,7 +366,7 @@ export function computeTotalAngularMomentum(
   config: ConfigType,
   params: SimulationParams = DEFAULT_PARAMS,
 ): Vector3 {
-  const specs = getPanelSpecs(config, params);
+  const kinematics = getPanelKinematics(config, params);
   const qBody = state._bodyQ
     ? new Quaternion(state._bodyQ.x, state._bodyQ.y, state._bodyQ.z, state._bodyQ.w)
     : new Quaternion().setFromEuler(new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'));
@@ -312,18 +381,11 @@ export function computeTotalAngularMomentum(
   // ── Panel contributions ────────────────────────────────────────────────────
   for (let i = 0; i < state.panels.length; i++) {
     const panel = state.panels[i];
-    const spec = specs[i];
+    const { qMount, aLocal, aBody, Ip } = kinematics[i];
 
-    // Panel inertia tensor (diagonal, panel body frame about hinge edge)
-    const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
-
-    // Panel orientation quaternion
-    const qMount = new Quaternion().setFromEuler(new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'));
-    const aLocal = hingeAxisUnit(spec.axis);
-    const aBody = aLocal.clone().applyQuaternion(qMount.clone());
     const aWorld = aBody.clone().applyQuaternion(qBody.clone());
 
-    const qHinge = new Quaternion().setFromAxisAngle(aLocal.clone().normalize(), panel.angle);
+    const qHinge = new Quaternion().setFromAxisAngle(aLocal, panel.angle);
     const qPanel = qBody.clone().multiply(qMount.clone()).multiply(qHinge).normalize();
 
     // Panel angular velocity in world frame: ω_panel = ω_body + θ̇ · â_world
@@ -395,7 +457,8 @@ export function computeSystemCoM(
   offsetMm: number;
   panelCentresWorld: Vector3[];
 } {
-  const specs = getPanelSpecs(config, params);
+  const kinematics = getPanelKinematics(config, params);
+  const specs = kinematics.map(k => k.spec);
   const mBody = params.bodyMass;
   const mPanel = params.panelMass;
   const nPanels = state.panels.length;
@@ -424,15 +487,13 @@ export function computeSystemCoM(
     const spec = specs[i];
     const panel = state.panels[i];
 
-    // ── 1. Mounting rotation quaternion (local → body frame) ────────────────
-    const qMount = new Quaternion().setFromEuler(
-      new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'),
-    );
+    // ── 1. Mounting rotation quaternion (local → body frame, cached) ─────────
+    const qMount = kinematics[i].qMount.clone();
 
     // ── 2. Hinge rotation quaternion (1-DOF deployment angle) ────────────────
-    const aLocal = hingeAxisUnit(spec.axis);
+    const aLocal = kinematics[i].aLocal;
     const currentAngle = panel.stuck ? panel.stuckAngle : panel.angle;
-    const qHinge = new Quaternion().setFromAxisAngle(aLocal.clone().normalize(), currentAngle);
+    const qHinge = new Quaternion().setFromAxisAngle(aLocal, currentAngle);
 
     // ── 3. Combined panel orientation in body frame ──────────────────────────
     //   q_panel_in_body = q_mount ⊗ q_hinge
@@ -446,18 +507,12 @@ export function computeSystemCoM(
     if (spec.parentIndex !== undefined && spec.hingeOffset !== undefined) {
       // Child panel: hinge position = parent hinge + hingeOffset rotated by parent's body-frame quaternion
       const parentHinge = panelHingeBody[spec.parentIndex];
-      const parentSpec = specs[spec.parentIndex];
+      const parentKin = kinematics[spec.parentIndex];
       const parentPanel = state.panels[spec.parentIndex];
 
-      const qParentMount = new Quaternion().setFromEuler(
-        new Euler(parentSpec.rot[0], parentSpec.rot[1], parentSpec.rot[2], 'XYZ'),
-      );
-      const aParentLocal = hingeAxisUnit(parentSpec.axis);
       const parentAngle = parentPanel.stuck ? parentPanel.stuckAngle : parentPanel.angle;
-      const qParentHinge = new Quaternion().setFromAxisAngle(
-        aParentLocal.clone().normalize(), parentAngle,
-      );
-      const qParentInBody = qParentMount.clone().multiply(qParentHinge).normalize();
+      const qParentHinge = new Quaternion().setFromAxisAngle(parentKin.aLocal, parentAngle);
+      const qParentInBody = parentKin.qMount.clone().multiply(qParentHinge).normalize();
 
       const offsetLocal = new Vector3(
         spec.hingeOffset[0],
@@ -535,6 +590,7 @@ function createInitialPanels(config: ConfigType): PanelState[] {
     stuckAngle: 0,
     deployed: false,
     contactForce: 0,
+    hingeTorque: 0,
     _q: new Quaternion(),
     _omega: new Vector3(0, 0, 0),
   }));
@@ -554,8 +610,9 @@ export function createInitialState(
     deploying: false,
     _bodyQ: new Quaternion(),
     // Explicitly cleared so a fresh (or mutated re-run) state can never inherit a
-    // stale post-deployment completion time.
+    // stale post-deployment completion time or stage-activation clock.
     _deployCompleteTime: undefined,
+    _stageOpenTimes: undefined,
   };
 }
 
@@ -572,7 +629,8 @@ export function stepSimulation(
 
   const dt = params.timeStep;
 
-  const specs = getPanelSpecs(config, params);
+  const kinematics = getPanelKinematics(config, params);
+  const specs = kinematics.map(k => k.spec);
 
   // ── Current body state ────────────────────────────────────────────────────
   const Ib = bodyInertiaDiag(params);
@@ -602,6 +660,22 @@ export function stepSimulation(
   }
   const updates: PanelUpdate[] = [];
 
+  // ── Stage-relative activation clock ────────────────────────────────────────
+  // Record the time at which each stage's predecessor stages first complete
+  // (every earlier-stage panel deployed or stuck). Stage 1 opens at t = 0.
+  // Per-panel start delays offset from the stage opening time, so the
+  // timing-discrepancy δt applies within every stage of staged configurations.
+  const stageOpenTimes: Record<number, number> = { 1: 0, ...(state._stageOpenTimes ?? {}) };
+  for (const spec of specs) {
+    const stage = spec.stage ?? 1;
+    if (stageOpenTimes[stage] !== undefined) continue;
+    const previousStagesComplete = state.panels.every((p, idx) => {
+      const candidateStage = specs[idx].stage ?? 1;
+      return candidateStage >= stage || p.deployed || p.stuck;
+    });
+    if (previousStagesComplete) stageOpenTimes[stage] = state.time;
+  }
+
   for (let i = 0; i < state.panels.length; i++) {
     const panel = state.panels[i];
     const spec = specs[i];
@@ -617,33 +691,25 @@ export function stepSimulation(
 
     // Once deployed, hold panel at stop angle — no further hinge dynamics needed
     if (panel.deployed) {
-      const qMountD = new Quaternion().setFromEuler(new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'));
-      const aLocalD = hingeAxisUnit(spec.axis);
-      const aBodyD = aLocalD.clone().applyQuaternion(qMountD.clone());
+      const kin = kinematics[i];
       updates.push({
         thetaNew: panel.angle, omegaRelNew: 0, deployedNew: true,
         contactForceNew: 0, hingeTorque: 0,
-        aBody: aBodyD, aLocal: aLocalD, qMount: qMountD,
+        aBody: kin.aBody, aLocal: kin.aLocal, qMount: kin.qMount,
       });
       continue;
     }
 
-    // Mounting rotation from spec.rot (transforms local panel frame → body frame)
-    const qMount = new Quaternion().setFromEuler(new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'));
-    const aLocal = hingeAxisUnit(spec.axis);        // hinge axis in local frame
-    const aBody = aLocal.clone().applyQuaternion(qMount.clone());       // physical hinge axis in body frame
+    // Cached step-invariant kinematics (mounting rotation, hinge axes, inertia)
+    const { qMount, aLocal, aBody, Ip } = kinematics[i];
     const aWorld = aBody.clone().applyQuaternion(qBody.clone());         // physical hinge axis in world frame
 
-    // Panel inertia tensor (diagonal, panel body frame about hinge edge)
-    const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
-
     // Panel orientation:  q_panel = q_body ⊗ q_mount ⊗ q_hinge_local(θ)
-    const qHingeLocal = new Quaternion().setFromAxisAngle(aLocal.clone().normalize(), panel.angle);
+    const qHingeLocal = new Quaternion().setFromAxisAngle(aLocal, panel.angle);
     const qPanel = qBody.clone().multiply(qMount.clone()).multiply(qHingeLocal).normalize();
 
     const theta = panel.angle;
     const omegaRel = panel.angularVelocity;
-    const deployDuration = params.hinge.deployDuration ?? 0;
 
     // ── Stage-aware deployment parameters ────────────────────────────────────
     const panelStage = spec.stage ?? 1;
@@ -667,19 +733,16 @@ export function stepSimulation(
 
       return 0;
     })();
-    const panelStartTime = (panelStage - 1) * deployDuration + panelStartDelay;
-
-    // Stage N panels wait until all earlier stages are fully deployed or stuck.
-    const previousStagesComplete = panelStage <= 1 || state.panels.every((p, idx) => {
-      const s = specs[idx];
-      const candidateStage = s.stage ?? 1;
-      return candidateStage >= panelStage || p.deployed || p.stuck;
-    });
+    // Stage N panels wait until all earlier stages are fully deployed or stuck
+    // (stage opening time recorded above), then a further per-panel start delay.
+    // NOTE: activation is resolved at timestep resolution — delays smaller than
+    // params.timeStep quantise to zero and do not shift the trajectory.
+    const stageOpenTime = stageOpenTimes[panelStage];
 
     let thetaNew: number, omegaRelNew: number, deployedNew: boolean;
     let contactForceNew: number, hingeTorque: number;
 
-    if (!previousStagesComplete) {
+    if (stageOpenTime === undefined) {
       // ── Waiting for previous stages — hold perfectly still ─────────────
       thetaNew = theta;
       omegaRelNew = 0;
@@ -687,34 +750,13 @@ export function stepSimulation(
       contactForceNew = 0;
       hingeTorque = 0;
 
-    } else if ((state.time + dt) < panelStartTime) {
+    } else if ((state.time + dt) < stageOpenTime + panelStartDelay) {
       // ── Delayed activation window — hold panel stowed until its start time ──
       thetaNew = theta;
       omegaRelNew = 0;
       deployedNew = false;
       contactForceNew = 0;
       hingeTorque = 0;
-
-    } else if (deployDuration > 0) {
-      // ── Kinematic ease-out deployment (stage-aware) ────────────────────────
-      // Stage 1 panels deploy during [startDelay, startDelay + deployDuration]
-      // Stage 2 panels deploy during [deployDuration + startDelay, 2*deployDuration + startDelay]
-      const tNext = state.time + dt;
-      const stageElapsed = tNext - panelStartTime;
-      const progress = Math.min(Math.max(stageElapsed / deployDuration, 0), 1);
-      const easeOut = 1 - Math.pow(1 - progress, 3);
-      const targetAngle = panelMaxAngle * easeOut;
-
-      omegaRelNew = (targetAngle - theta) / dt;
-      thetaNew = targetAngle;
-      deployedNew = progress >= 1;
-      if (deployedNew) { thetaNew = panelMaxAngle; omegaRelNew = 0; }
-
-      // Kinematic panels should not inject reaction torque into body dynamics.
-      // Momentum conservation is enforced by the correction loop using the
-      // prescribed panel angles.
-      hingeTorque = 0;
-      contactForceNew = 0;
 
     } else {
       // ── Physics-driven hinge (stage-aware) ─────────────────────────────────
@@ -771,17 +813,36 @@ export function stepSimulation(
       contactForceNew = Math.abs(tContact);
 
       if (thetaNew < 0) { thetaNew = 0; omegaRelNew = 0; }
-      deployedNew = thetaNew >= stopAngle && Math.abs(omegaRelNew) < 0.1;
+
+      // ── Completion latch ──────────────────────────────────────────────────
+      // Latch "deployed" once the panel is effectively at rest close to the
+      // stop, then hold it there — a real end-of-travel latch engaging.
+      // Detection only — dynamics are unchanged. The tolerance is the
+      // Coulomb-friction dead-band τ_f/k_eff (where the hinge can stall short
+      // of the stop), CAPPED at DEPLOY_LATCH_MAX_DEADBAND_RAD so a soft-spring
+      // hinge that stalls far from the stop is reported as an incomplete
+      // deployment instead of being snapped through tens of degrees.
+      // The calibrated underdamped hinge reaches the stop with momentum and
+      // latches during/after the first stop contact (measured snap ≈ 0°).
+      const effectiveStiffness = (h.hingeModel === 'bistable' && h.bistability)
+        ? 2 * h.bistability.bistabilityCoeff * stopAngle * stopAngle // |dτ/dθ| at the deployed well
+        : h.springConstant;
+      const frictionDeadband = Math.min(
+        effectiveStiffness > 0 ? h.frictionCoeff / effectiveStiffness : 0,
+        DEPLOY_LATCH_MAX_DEADBAND_RAD,
+      );
+      deployedNew =
+        thetaNew >= stopAngle - (frictionDeadband + DEPLOY_LATCH_MARGIN_RAD) &&
+        Math.abs(omegaRelNew) < 0.1;
       if (deployedNew) { thetaNew = stopAngle; omegaRelNew = 0; }
     }
 
     updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, aBody, aLocal, qMount });
 
     // Accumulate equal-and-opposite reaction on body:  τ_body += −τ · â_world
-    const aWorld2 = aBody.clone().applyQuaternion(qBody.clone());
-    bodyTorqueWorld.x -= hingeTorque * aWorld2.x;
-    bodyTorqueWorld.y -= hingeTorque * aWorld2.y;
-    bodyTorqueWorld.z -= hingeTorque * aWorld2.z;
+    bodyTorqueWorld.x -= hingeTorque * aWorld.x;
+    bodyTorqueWorld.y -= hingeTorque * aWorld.y;
+    bodyTorqueWorld.z -= hingeTorque * aWorld.z;
   }
 
   // ── Phase 2: body rotational dynamics (RK4 + conservation correction) ─────
@@ -802,43 +863,40 @@ export function stepSimulation(
   let omegaBodyIter = omegaBodyRK4.clone();
   const MAX_ITERS = 5;
 
+  // Iteration-invariant per-panel quantities: they depend on the RK4-predicted
+  // body attitude and the already-updated hinge angles/rates — NOT on the body
+  // angular-velocity iterate — so compute them once, not once per iteration.
+  // Stuck panels still co-rotate with the body, contributing inertia with zero
+  // relative hinge rate. Same math as before, hoisted for the 1/1200 s hot loop.
+  const corrPanels = state.panels.map((panel, i) => {
+    const kin = kinematics[i];
+    const up = updates[i];
+    const thetaIter = panel.stuck ? panel.stuckAngle : up.thetaNew;
+    const omegaRelIter = panel.stuck ? 0 : up.omegaRelNew;
+
+    // Panel orientation using RK4-predicted body orientation:
+    // q_panel = q_body_RK4 ⊗ q_mount ⊗ q_hinge_local(θ_new)
+    const qHingeNew = new Quaternion().setFromAxisAngle(kin.aLocal, thetaIter);
+    const qPanelNew = qBodyRK4.clone().multiply(kin.qMount.clone()).multiply(qHingeNew).normalize();
+
+    // Hinge axis in world frame (using RK4-predicted body orientation)
+    const aWorldNew = kin.aBody.clone().applyQuaternion(qBodyRK4.clone());
+
+    return { Ip: kin.Ip, qPanelNew, qPanelNewConj: qPanelNew.clone().conjugate(), aWorldNew, omegaRelIter };
+  });
+
   for (let iter = 0; iter < MAX_ITERS; iter++) {
     // Compute panel angular momentum contribution using current body velocity estimate
     const H_panels = new Vector3(0, 0, 0);
 
-    for (let i = 0; i < state.panels.length; i++) {
-      const panel = state.panels[i];
-      const spec = specs[i];
-      const up = updates[i];
-
-      // Stuck panels still co-rotate with the body, so they contribute inertia
-      // with zero relative hinge rate.
-      const qMountIter = new Quaternion().setFromEuler(
-        new Euler(spec.rot[0], spec.rot[1], spec.rot[2], 'XYZ'),
-      );
-      const aLocalIter = hingeAxisUnit(spec.axis);
-      const thetaIter = panel.stuck ? panel.stuckAngle : up.thetaNew;
-      const omegaRelIter = panel.stuck ? 0 : up.omegaRelNew;
-
-      // Panel inertia tensor (diagonal, panel body frame about hinge edge)
-      const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
-
-      // Panel orientation using RK4-predicted body orientation:
-      // q_panel = q_body_RK4 ⊗ q_mount ⊗ q_hinge_local(θ_new)
-      const qHingeNew = new Quaternion().setFromAxisAngle(aLocalIter.clone().normalize(), thetaIter);
-      const qPanelNew = qBodyRK4.clone().multiply(qMountIter.clone()).multiply(qHingeNew).normalize();
-
-      // Hinge axis in world frame (using RK4-predicted body orientation)
-      const aBodyIter = aLocalIter.clone().applyQuaternion(qMountIter.clone());
-      const aWorldNew = aBodyIter.clone().applyQuaternion(qBodyRK4.clone());
-
+    for (const cp of corrPanels) {
       // Panel angular velocity: ω_panel = ω_body_iter + θ̇_new · â_world
-      const omegaPanelNew = omegaBodyIter.clone().add(aWorldNew.clone().multiplyScalar(omegaRelIter));
+      const omegaPanelNew = omegaBodyIter.clone().add(cp.aWorldNew.clone().multiplyScalar(cp.omegaRelIter));
 
       // Rotate ω to panel body frame, apply diagonal inertia, rotate back
-      const omegaPanelLocal = omegaPanelNew.clone().applyQuaternion(qPanelNew.clone().conjugate());
-      const HpanelLocal = applyInertia(Ip, omegaPanelLocal);
-      const HpanelWorld = HpanelLocal.clone().applyQuaternion(qPanelNew.clone());
+      const omegaPanelLocal = omegaPanelNew.applyQuaternion(cp.qPanelNewConj);
+      const HpanelLocal = applyInertia(cp.Ip, omegaPanelLocal);
+      const HpanelWorld = HpanelLocal.applyQuaternion(cp.qPanelNew);
 
       H_panels.x += HpanelWorld.x;
       H_panels.y += HpanelWorld.y;
@@ -890,7 +948,7 @@ export function stepSimulation(
     const up = updates[i];
 
     if (panel.stuck) {
-      return { ...panel, _q: panel._q ?? new Quaternion(), _omega: panel._omega ?? new Vector3(0, 0, 0) };
+      return { ...panel, hingeTorque: 0, _q: panel._q ?? new Quaternion(), _omega: panel._omega ?? new Vector3(0, 0, 0) };
     }
 
     // Derive panel quaternion:  q_panel = q_body ⊗ q_mount ⊗ q_hinge_local(θ)
@@ -907,6 +965,7 @@ export function stepSimulation(
       angularVelocity: up.omegaRelNew,
       deployed: up.deployedNew,
       contactForce: up.contactForceNew,
+      hingeTorque: up.hingeTorque,
       _q: qPanelNew,
       _omega: omegaPanelNew,
     };
@@ -937,12 +996,15 @@ export function stepSimulation(
     deploying: !allDeployed || withinObservationWindow,
     _bodyQ: qBodyNew,
     _deployCompleteTime: deployCompleteTime,
+    _stageOpenTimes: stageOpenTimes,
   };
 
-  // Compute the composite system CoM for the newly assembled state so the
-  // viewer can rotate the body about its true CoM, not its geometric centre.
-  const { comBody } = computeSystemCoM(newState, config, params);
-  return { ...newState, comBody };
+  // NOTE: the composite system CoM (`comBody`) is a rendering concern and is no
+  // longer computed here — at the 1/1200 s physics timestep it dominated the hot
+  // loop. The UI computes it once per DISPLAYED frame via computeSystemCoM and
+  // attaches it to the state it renders (see SimulationPage), which is the only
+  // consumer (CubeSatViewer group offset).
+  return newState;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1015,6 +1077,12 @@ export function runFullSimulation(
   const frames: SimulationFrame[] = [];
   const maxSteps = Math.ceil(maxTime / params.timeStep);
 
+  // Cadences are TIME-based (steps derived from the timestep), so the recorded
+  // chart density (~20 Hz) and the 1 Hz momentum-warning check are independent
+  // of the physics resolution.
+  const recordEvery = Math.max(1, Math.round(0.05 / params.timeStep)); // ~20 Hz frames
+  const warnEvery = Math.max(1, Math.round(1 / params.timeStep));      // ~1 Hz warn check
+
   // ── Angular momentum conservation tracking ─────────────────────────────
   const H0 = computeTotalAngularMomentum(state, config, params);
   const H0mag = Math.sqrt(H0.x * H0.x + H0.y * H0.y + H0.z * H0.z);
@@ -1027,9 +1095,9 @@ export function runFullSimulation(
   for (let i = 0; i < maxSteps; i++) {
     state = stepSimulation(state, config, params);
 
-    // ── Periodic momentum conservation check (every 60 frames ≈ 1 s) ─────
+    // ── Periodic momentum conservation check (~1 s warn / ~50 ms record) ──
     let momentumError = 0;
-    if (i % 60 === 59 || i % 3 === 0) {
+    if (i % warnEvery === warnEvery - 1 || i % recordEvery === 0) {
       const Hcur = computeTotalAngularMomentum(state, config, params);
       const dH = {
         x: Hcur.x - H0.x,
@@ -1039,8 +1107,8 @@ export function runFullSimulation(
       const dHmag = Math.sqrt(dH.x * dH.x + dH.y * dH.y + dH.z * dH.z);
       momentumError = H0mag > 1e-12 ? dHmag / H0mag : dHmag;
 
-      // Warn on > 5% violation (only on the 60-frame check cadence)
-      if (i % 60 === 59 && momentumError > 0.05) {
+      // Warn on > 5% violation (only on the ~1 s check cadence)
+      if (i % warnEvery === warnEvery - 1 && momentumError > 0.05) {
         console.warn(
           `[momentum] t=${state.time.toFixed(3)}s: angular momentum error ` +
           `${(momentumError * 100).toFixed(2)}% exceeds 5% threshold`,
@@ -1048,8 +1116,8 @@ export function runFullSimulation(
       }
     }
 
-    // Record every 3rd frame for chart data
-    if (i % 3 === 0) {
+    // Record frames at ~20 Hz for chart data (independent of physics timestep)
+    if (i % recordEvery === 0) {
       // Compute attitude coupling: rotation angle from initial to current orientation
       // q_rel = q_current ⊗ q_0* → extract angle: θ = 2·acos(|w|)
       const qCur = state._bodyQ ?? new Quaternion();
@@ -1072,7 +1140,9 @@ export function runFullSimulation(
         totalContactForce: state.panels.reduce((s, p) => s + p.contactForce, 0),
         momentumError,
         attitudeCouplingDeg,
-        eDetumble: Math.round(eDetumbleMJ * 1000) / 1000,
+        // 6-decimal (nJ) resolution: physics-driven deployment transients are
+        // ~1e-4 mJ and would underflow the previous 3-decimal rounding to 0.
+        eDetumble: Math.round(eDetumbleMJ * 1e6) / 1e6,
       });
     }
 
@@ -1085,99 +1155,7 @@ export function runFullSimulation(
   return frames;
 }
 
-export interface ReportRow {
-  config: ConfigType;
-  failureMode: FailureModeKey;
-  material: MaterialPresetKey;
-  materialLabel: string;
-  panelMass: number;           // kg
-  attitudeCouplingDeg: number; // final
-  eDetumbleMJ: number;         // final (mJ)
-  maxAngularVelocityDeg: number;
-  comOffsetMm: number;
-  deploymentTimeS: number;
-}
-
-function round3(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}
-
-export function computeReportData(
-  config: ConfigType,
-  failureMode: FailureModeKey,
-  materialKey: MaterialPresetKey,
-): ReportRow {
-  const panelCount = CONFIGURATIONS.find(entry => entry.id === config)?.panelCount ?? 0;
-  const allStuck = Array.from({ length: panelCount }, (_, index) => index);
-  const stuckMap: Record<FailureModeKey, number[]> = {
-    none: [],
-    'one-stuck': [0],
-    'two-opposite':
-      config === 'long-edge' || config === 'double-long-edge'
-        ? [0, 1]
-        : [0, 2],
-    'all-stuck': allStuck,
-  };
-
-  const material = MATERIAL_PRESETS.find(preset => preset.key === materialKey);
-  if (!material) {
-    throw new Error(`Unknown material preset: ${materialKey}`);
-  }
-
-  const params: SimulationParams = {
-    ...DEFAULT_PARAMS,
-    panelMass: material.panelMass,
-    hinge: {
-      ...DEFAULT_PARAMS.hinge,
-      deployDuration: 2,
-    },
-  };
-
-  const frames = runFullSimulation(config, params, 8, stuckMap[failureMode]);
-  const last = frames.at(-1);
-  const maxAngularVelocityDeg = frames.length
-    ? Math.max(
-        ...frames.map(frame =>
-          MathUtils.radToDeg(
-            new Vector3(
-              frame.angularVelocity.x,
-              frame.angularVelocity.y,
-              frame.angularVelocity.z,
-            ).length(),
-          ),
-        ),
-      )
-    : 0;
-
-  let comOffsetMm = 0;
-  try {
-    const state = createInitialState(config);
-    const stuckSet = new Set(stuckMap[failureMode]);
-    state.panels = state.panels.map((panel, index) => ({
-      ...panel,
-      stuck: stuckSet.has(index),
-      stuckAngle: stuckSet.has(index) ? 0 : panel.stuckAngle,
-      angle: last?.panelAngles?.[index] ?? panel.angle,
-    }));
-    comOffsetMm = computeSystemCoM(state, config, params).offsetMm;
-  } catch {
-    comOffsetMm = 0;
-  }
-
-  return {
-    config,
-    failureMode,
-    material: materialKey,
-    materialLabel: material.label,
-    panelMass: material.panelMass,
-    attitudeCouplingDeg: round3(last?.attitudeCouplingDeg ?? 0),
-    eDetumbleMJ: round3(last?.eDetumble ?? 0),
-    maxAngularVelocityDeg: round3(maxAngularVelocityDeg),
-    comOffsetMm: round3(comOffsetMm),
-    // NOTE: with the post-deployment observation window, `last.time` is the window-end
-    // time (deployment end + up to POST_DEPLOY_OBSERVATION_S), NOT the deployment-end
-    // time. This function is currently unused by the UI (the UI uses reportData.ts); do
-    // not wire it into UI deploy-time displays without accounting for the shift.
-    deploymentTimeS: round3(last?.time ?? 0),
-  };
-}
+// NOTE: the legacy engine-level `computeReportData` (a second, kinematic-configured
+// report path, unused by the UI) was removed with the kinematic deployment mode.
+// The single scientific report path is `src/lib/physics/reportData.ts`, which runs
+// the physics-driven hinge dynamics only.

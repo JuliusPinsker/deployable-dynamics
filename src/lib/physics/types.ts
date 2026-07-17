@@ -16,9 +16,6 @@ export interface HingeParams {
    */
   stopStiffness: number;     // N·m/rad — rotational stiffness of mechanical stop
   stopDamping: number;       // N·m·s/rad — rotational damping of mechanical stop
-  // Optional: kinematic deployment duration (seconds). When provided, panels follow a deterministic ease-out
-  // kinematic profile (useful for precise animation timing). If omitted, the hinge is physics-driven.
-  deployDuration?: number;
   // Optional per-panel start delays (seconds) for short-edge config panels [0..3].
   // Delays shift activation time only and do not change motion profile.
   shortEdgeStartDelays?: [number, number, number, number];
@@ -46,6 +43,13 @@ export interface PanelState {
   stuckAngle: number;        // angle where stuck
   deployed: boolean;         // has reached stop angle
   contactForce: number;      // N at mechanical stop
+  /**
+   * Net hinge torque (N·m) applied to this panel on the last step — spring/bistable
+   * + preload − damping − friction − stop. Telemetry: the equal-and-opposite body
+   * reaction is derived from this inside the engine. 0 while stowed-held, stuck,
+   * or latched deployed.
+   */
+  hingeTorque: number;
   // ── Internal 3D state (engine-managed, derived each step) ──
   _q?: Quaternion;           // panel orientation quaternion (world frame)
   _omega?: Vector3;          // panel angular velocity (world frame, 3D)
@@ -60,7 +64,10 @@ export interface SpacecraftState {
   deploying: boolean;
   // ── Internal quaternion state (engine-managed) ──
   _bodyQ?: Quaternion;       // body orientation quaternion
-  /** Composite system CoM in body frame (metres). Populated each step. */
+  /**
+   * Composite system CoM in body frame (metres). Rendering concern: populated by
+   * the UI at display-frame cadence via computeSystemCoM (not by the physics step).
+   */
   comBody?: Vector3;
   /**
    * Time (s) at which deployment first completed (all panels deployed/stuck).
@@ -68,6 +75,12 @@ export interface SpacecraftState {
    * which the body keeps coasting with panels held fixed. Engine-managed.
    */
   _deployCompleteTime?: number;
+  /**
+   * Time (s) at which each deployment stage's predecessors first completed
+   * (stage 1 opens at 0). Per-panel start delays offset from the stage opening,
+   * so timing-discrepancy δt applies within every stage. Engine-managed.
+   */
+  _stageOpenTimes?: Record<number, number>;
 }
 
 export interface SimulationParams {
@@ -186,17 +199,50 @@ export const DEFAULT_PARAMS: SimulationParams = {
   bodyWidth: 0.1,            // X dimension
   bodyDepth: 0.1,            // Y dimension
   bodyHeight: 0.3405,        // Z dimension (long edge)
-  // Hinge tuned to produce ~2.0s ease-out deployment with no overshoot (critically/over-damped)
+  // Torsional spring-damper hinge — the single (physics-driven) deployment model.
+  //
+  // ── ENGINEERING CALIBRATION ASSUMPTION — NOT A VENDOR-QUALIFIED HINGE VALUE ──
+  // k and c were selected by the transparent sensitivity sweep in
+  // src/lib/physics/calibration.ts (grid over ωₙ × ζ, production engine, FR4
+  // nominal long-edge), pending component-level torsion-spring and deployment
+  // testing. Nominal target metric: time from release to FIRST reach of 90% of
+  // the deployed angle, window 1.0–2.0 s, preferring ≈ 1.5 s. Resulting
+  // simulated values with these defaults (FR4 long-edge, 1/1200 s timestep):
+  // t₉₀ ≈ 1.517 s; stop capture/latch ≈ 1.668 s. Deployment time remains an
+  // emergent simulation result, never prescribed.
+  // Target basis: a 1–2 s controlled CubeSat panel deployment range is
+  // supported by the Muhammed et al. deployment study, and 1.0 s is used as a
+  // deployment-time assumption in the NASA ALBus CubeSat hinge analysis (both
+  // provided as project references; no component datasheet exists in-repo).
+  // Free-travel approximation (I_eff = panel inertia about the hinge axis as
+  // mapped by the engine, long-edge FR4 ≈ 3.092e-4 kg·m²):
+  //   ωₙ = √(k/I_eff) ≈ 1.20 rad/s, ζ = c/(2√(k·I_eff)) ≈ 0.30 (underdamped).
   hinge: {
-    springConstant: 0.02,    // N·m/rad — tuned for ~2s deployment with adequate torque
-    dampingCoeff: 0.08,      // N·m·s/rad — overdamped to avoid overshoot
-    frictionCoeff: 0.0005,   // small Coulomb friction
-    preloadTorque: 0.0,      // no preload — controlled spring response
+    springConstant: 4.45e-4, // N·m/rad — calibrated (see block comment above)
+    dampingCoeff: 2.23e-4,   // N·m·s/rad — calibrated; lightly damped, ζ ≈ 0.30
+    // Coulomb friction — scaled with the calibrated k to preserve the original
+    // design's friction dead-band τ_f/k = 0.0005/0.02 = 0.025 rad (1.43°).
+    // Keeping the legacy 5e-4 N·m against the calibrated soft spring is
+    // demonstrably inconsistent with the deployment-time target: its dead-band
+    // spans tens of degrees and the short-edge panels (critically damped at
+    // the calibrated k·c, no overshoot) stall far short of the stop, so the
+    // short-edge and coupled configurations never complete (measured in the
+    // calibration sweep; asserted in calibration.test.ts).
+    // Stop and preload values are unchanged by the calibration.
+    frictionCoeff: 1.11e-5,  // N·m — 0.0005 × (4.45e-4 / 0.02); dead-band 0.025 rad preserved
+    preloadTorque: 0.0,      // N·m — no preload (unchanged by calibration)
     stopAngle: Math.PI / 2,
-    stopStiffness: 10,       // N·m/rad — ω_n ≈ 100 rad/s for I_panel = 0.001 kg·m²
-    stopDamping: 0.24,        // N·m·s/rad — ζ ≈ 1.2 (overdamped, settles in ~0.05 s)
-    deployDuration: 0.4,     // 400 ms — consistent with Planet Labs Flock observed deployment
+    stopStiffness: 10,       // N·m/rad — mechanical stop (unchanged by calibration)
+    stopDamping: 0.24,       // N·m·s/rad — overdamped stop contact (ζ_stop ≈ 2.2)
+                             //   absorbs the arrival and prevents persistent
+                             //   post-stop oscillation without global viscous damping
     shortEdgeStartDelays: [0, 1.0, 0, 1.0],
   },
-  timeStep: 1 / 60,
+  // Fixed physics timestep: 1/1200 s ≈ 0.833 ms. This is the timing RESOLUTION of
+  // the simulation — panel release delays (δt) activate on step boundaries, so the
+  // smallest representable stagger is one step (a 5 ms delay = exactly 6 steps).
+  // Deterministic fixed-step integration (never adaptive). Rendering is decoupled:
+  // the UI advances 1/60 s of simulation time per display frame = exactly 20
+  // physics substeps, so browser frame rate never alters the dynamics.
+  timeStep: 1 / 1200,
 };

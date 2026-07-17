@@ -12,6 +12,7 @@ import {
   DEFAULT_PARAMS,
   MATERIAL_PRESETS,
   type ConfigType,
+  type MaterialPresetKey,
   type SpacecraftState,
   type SimulationParams,
   Quaternion,
@@ -19,6 +20,7 @@ import {
 } from '@/lib/physics/types';
 import {
   computeEDetumble,
+  computeSystemCoM,
   createInitialState,
   stepSimulation,
   accumulateOmegaPeak,
@@ -56,9 +58,15 @@ export default function SimulationPage() {
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const initialConfig = (searchParams.get('config') as ConfigType) || 'long-edge';
+  // Material preselected on the Landing page arrives via router state; it only
+  // seeds the ON-PAGE selector below (header links drop router state, so the
+  // page must own material selection rather than rely on navigation state).
   const navPanelMass = (location.state as { panelMass?: number } | null)?.panelMass
     ?? DEFAULT_PARAMS.panelMass;
-  const materialLabel = MATERIAL_PRESETS.find(p => p.panelMass === navPanelMass)?.label ?? 'Custom';
+  const initialMaterialKey =
+    MATERIAL_PRESETS.find(p => p.panelMass === navPanelMass)?.key ?? 'fr4';
+  const [materialKey, setMaterialKey] = useState<MaterialPresetKey>(initialMaterialKey);
+  const activeMaterial = MATERIAL_PRESETS.find(p => p.key === materialKey)!;
 
   const [config, setConfig] = useState<ConfigType>(initialConfig);
   const [state, setState] = useState<SpacecraftState>(() =>
@@ -89,16 +97,18 @@ export default function SimulationPage() {
     // Sequential burn-wire release: panel i fires at i × δt. Applies to all configs.
     const panelStartDelays = Array.from({ length: panelCount }, (_, i) => i * delaySeconds);
     const shortEdgeStartDelays: [number, number, number, number] = [0, delaySeconds, 0, delaySeconds];
+    // A fresh params object per (material, δt, config) — the engine caches
+    // per-params kinematics by object identity, so this must never be mutated.
     return {
       ...base,
-      panelMass: navPanelMass,
+      panelMass: activeMaterial.panelMass,
       hinge: {
         ...base.hinge,
         panelStartDelays,
         shortEdgeStartDelays,
       },
     };
-  }, [config, delaySeconds, navPanelMass]);
+  }, [config, delaySeconds, activeMaterial.panelMass]);
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -124,12 +134,18 @@ export default function SimulationPage() {
 
     if (!st.deploying) return;
 
-    // Normal deployment physics loop
-    const stepsPerFrame = Math.max(1, Math.round(speedRef.current));
+    // Rendering is decoupled from physics: each display frame advances
+    // speed × (1/60) s of simulation time as N fixed physics substeps of
+    // params.timeStep (1/1200 s → exactly 20 substeps per frame at 1×).
+    // Browser frame rate never changes the dynamics or the δt resolution.
+    const stepsPerFrame = Math.max(
+      1,
+      Math.round((speedRef.current / 60) / currentParams.timeStep),
+    );
     let newState = st;
     for (let i = 0; i < stepsPerFrame; i++) {
       newState = stepSimulation(newState, configRef.current, currentParams);
-      // Track peak detumbling energy across every step (the peak can fall between frames).
+      // Track peak detumbling energy across every substep (the peak can fall between frames).
       const omegaRad = newState.angularVelocity.length();
       const eInst = computeEDetumble(
         newState.angularVelocity,
@@ -138,7 +154,10 @@ export default function SimulationPage() {
       );
       peakRef.current = accumulateOmegaPeak(peakRef.current, omegaRad, eInst);
     }
-    setState(newState);
+    // The composite CoM is a rendering concern (viewer rotates about it) —
+    // compute it once per DISPLAYED frame, not per physics substep.
+    const { comBody } = computeSystemCoM(newState, configRef.current, currentParams);
+    setState({ ...newState, comBody });
 
     rafRef.current = requestAnimationFrame(animate);
   }, [params]);
@@ -221,6 +240,14 @@ export default function SimulationPage() {
     resetSimulation(c, failureMode, tumbleDeg);
   }, [failureMode, tumbleDeg, resetSimulation]);
 
+  const handleMaterialChange = useCallback((key: MaterialPresetKey) => {
+    setMaterialKey(key);
+    // New panel mass ⇒ new inertia/CoM inputs. Any in-progress or completed
+    // trajectory from the previous material is invalid — full reset so stale
+    // results can never remain displayed under the new material.
+    resetSimulation(config, failureMode, tumbleDeg);
+  }, [config, failureMode, tumbleDeg, resetSimulation]);
+
   const handleFailureModeChange = useCallback(
     (mode: typeof failureMode) => {
       setFailureMode(mode);
@@ -287,7 +314,7 @@ export default function SimulationPage() {
             peakEDetumbleMJ={peakRef.current.eDetumbleMJ}
             delayMagnitude={delayMagnitude}
             delayUnit={delayUnit}
-            materialLabel={materialLabel}
+            materialLabel={`${activeMaterial.label} (${activeMaterial.massGrams} g)`}
           />
 
           {failureMode !== 'nominal' && (
@@ -356,6 +383,38 @@ export default function SimulationPage() {
 
           <Card>
             <CardHeader className="pb-3">
+              <CardTitle className="text-sm">Panel Material</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {MATERIAL_PRESETS.map(preset => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={materialKey === preset.key}
+                  onClick={() => handleMaterialChange(preset.key)}
+                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors border ${
+                    materialKey === preset.key
+                      ? 'border-primary bg-primary/10 text-foreground'
+                      : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">{preset.label}</span>
+                    <span className="text-[11px] font-mono text-muted-foreground">{preset.massGrams} g</span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">{preset.description}</div>
+                </button>
+              ))}
+              <p className="text-[10px] text-muted-foreground">
+                Changing material resets the run — panel mass feeds inertia and CoM, so a
+                trajectory computed with another mass is not reusable.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
               <CardTitle className="text-sm">Controls</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -414,6 +473,12 @@ export default function SimulationPage() {
                     </button>
                   ))}
                 </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Panel i releases at i·δt. Timing resolution = the fixed physics timestep of
+                  {' '}{(DEFAULT_PARAMS.timeStep * 1000).toFixed(2)} ms (1/1200 s): release times
+                  snap to the next step boundary, so a 5 ms δt is honoured to within one step,
+                  while sub-{(DEFAULT_PARAMS.timeStep * 1000).toFixed(2)} ms values quantise to zero.
+                </p>
               </div>
 
               <div className="flex items-center justify-between">
@@ -446,7 +511,10 @@ export default function SimulationPage() {
               <div className="text-xs text-muted-foreground">
                 {`Dimensions: ${Math.round(params.bodyWidth * 1000)} × ${Math.round(params.bodyDepth * 1000)} × ${(params.bodyHeight * 1000).toFixed(1)} mm (W × D × H)`}
               </div>
-              <div className="mt-2 text-xs text-muted-foreground">Mass: {params.bodyMass} kg</div>
+              <div className="mt-2 text-xs text-muted-foreground">Body mass: {params.bodyMass} kg</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Panel: {activeMaterial.label} — {(params.panelMass * 1000).toFixed(0)} g each
+              </div>
             </CardContent>
           </Card>
 

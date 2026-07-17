@@ -190,44 +190,40 @@ describe('integrateBodyRK4', () => {
 });
 
 describe('existing simulation regression with RK4 body integrator', () => {
-  it('long-edge panels deploy in ~0.4s with no overshoot', () => {
-    const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 6);
+  it('long-edge panels deploy under hinge dynamics with bounded overshoot (latch ~1.7 s)', () => {
+    const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 10);
     expect(frames.length).toBeGreaterThan(0);
 
     const stopAngle = DEFAULT_PARAMS.hinge.stopAngle;
     const angleSeries = frames.map(f => f.panelAngles[0]);
 
-    // Monotonic (no overshoot)
-    for (let i = 1; i < angleSeries.length; i++) {
-      expect(angleSeries[i]).toBeGreaterThanOrEqual(angleSeries[i - 1] - 1e-9);
-    }
-    expect(Math.max(...angleSeries)).toBeLessThanOrEqual(stopAngle + 1e-6);
+    // Bounded overshoot: the calibrated lightly damped hinge (ζ ≈ 0.30) arrives
+    // at the overdamped mechanical stop with momentum; measured penetration ≈ 0.07°.
+    expect(Math.max(...angleSeries)).toBeLessThanOrEqual(stopAngle + 0.005);
 
-    // Deployment time ~0.4s (DEFAULT_PARAMS.hinge.deployDuration = 0.4)
+    // Deployment completion is a dynamics outcome: the calibrated hinge captures
+    // the stop and latches at ~1.67 s — window asserted, not prescribed.
     const deployedFrame = frames.find(f => f.panelAngles[0] >= 0.999 * stopAngle);
     expect(deployedFrame).toBeDefined();
-    expect(deployedFrame!.time).toBeGreaterThan(0.25);
-    expect(deployedFrame!.time).toBeLessThan(0.55);
+    expect(deployedFrame!.time).toBeGreaterThan(1.3);
+    expect(deployedFrame!.time).toBeLessThan(2.1);
   });
 
   it('double-long-edge sequential deployment still works', () => {
-    const frames = runFullSimulation('double-long-edge', DEFAULT_PARAMS, 6);
+    const frames = runFullSimulation('double-long-edge', DEFAULT_PARAMS, 12);
     expect(frames.length).toBeGreaterThan(0);
 
     const stopAngle = DEFAULT_PARAMS.hinge.stopAngle;
     const stage2MaxAngle = Math.PI;
 
-    // Stage 1 panels reach π/2
+    // Stage 1 panels reach π/2 exactly (completion latch holds the stop)
     const last = frames[frames.length - 1];
     expect(last.panelAngles[0]).toBeCloseTo(stopAngle, 4);
     expect(last.panelAngles[1]).toBeCloseTo(stopAngle, 4);
 
-    // Stage 2 panels reach ~π. At the faster 0.4s deployment they rest ~0.1°
-    // short of π (Coulomb-friction dead-band at the mechanical stop), so assert
-    // effectively-deployed (≥ 99.9% of π) with no overshoot rather than exact π.
-    expect(last.panelAngles[2]).toBeGreaterThanOrEqual(0.999 * stage2MaxAngle);
-    expect(last.panelAngles[2]).toBeLessThanOrEqual(stage2MaxAngle + 1e-6);
-    expect(last.panelAngles[3]).toBeGreaterThanOrEqual(0.999 * stage2MaxAngle);
-    expect(last.panelAngles[3]).toBeLessThanOrEqual(stage2MaxAngle + 1e-6);
+    // Stage 2 panels reach π exactly — the completion latch engages inside the
+    // Coulomb-friction dead-band and holds the panel at its stop.
+    expect(last.panelAngles[2]).toBeCloseTo(stage2MaxAngle, 4);
+    expect(last.panelAngles[3]).toBeCloseTo(stage2MaxAngle, 4);
   });
 });

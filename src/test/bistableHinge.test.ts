@@ -48,7 +48,6 @@ function makeBistableParams(overrides?: Partial<SimulationParams>): SimulationPa
     ...DEFAULT_PARAMS,
     hinge: {
       ...DEFAULT_PARAMS.hinge,
-      deployDuration: undefined,     // physics-driven, not kinematic
       preloadTorque: 0.05,           // moderate preload to initiate deployment
       dampingCoeff: 0.08,            // same as default linear
       hingeModel: 'bistable',
@@ -143,7 +142,9 @@ describe('Bistable tape-spring hinge — simulation integration', () => {
   });
 
   it('linear hinge model still works (backward compatibility)', () => {
-    const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 4);
+    // The calibrated lightly damped default hinge (ζ ≈ 0.30) crosses 95% of the
+    // stop at ~1.6 s — a dynamics outcome; the horizon comfortably covers it.
+    const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 8);
     expect(frames.length).toBeGreaterThan(0);
 
     const lastFrame = frames[frames.length - 1];
@@ -171,7 +172,6 @@ describe('Bistable tape-spring hinge — simulation integration', () => {
     const params = makeBistableParams({
       hinge: {
         ...DEFAULT_PARAMS.hinge,
-        deployDuration: undefined,
         preloadTorque: 0.001,        // very small preload — insufficient to escape well
         dampingCoeff: 0.12,
         hingeModel: 'bistable',

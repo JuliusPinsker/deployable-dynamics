@@ -13,7 +13,7 @@ import { DEFAULT_PARAMS, Vector3 } from '../lib/physics/types';
 //
 //  The test asserts against the REAL computation path via `runScenarioTrajectory`
 //  (same material-sourced params, stuck resolution, and horizon that computeSingleRow
-//  uses) — no material masses, deployDuration, or stuck indices are reconstructed here.
+//  uses) — no material masses, hinge params, or stuck indices are reconstructed here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('computeSingleRow — peak-frame reporting', () => {
@@ -28,9 +28,15 @@ describe('computeSingleRow — peak-frame reporting', () => {
     // After the fix, w_final is taken from the same peak frame as w_peak.
     expect(row.finalOmegaDegPerS).toBeCloseTo(row.peakOmegaDegPerS, 10);
 
-    // Deploy time is config-dependent (long-edge = 1.117 s in the report; set by the kinematic
-    // ease-out timing, independent of panel mass) and must NOT jump to the window-end time.
-    expect(row.deployTimeS).toBeCloseTo(1.117, 3);
+    // Calculated deployment time t₉₀ is a dynamics outcome (first frame at/after
+    // 90% of the final panel angle, 50 ms frame cadence). Under the CALIBRATED
+    // default hinge (k = 4.45e-4, c = 2.23e-4, ζ ≈ 0.30 — engineering
+    // calibration, see calibration.ts) long-edge measures 1.551 s. Window
+    // first (target 1.0–2.0 s), then a narrow regression pin on the selected
+    // default; it must NOT jump to the window-end time.
+    expect(row.deployTimeS).toBeGreaterThan(1.0);
+    expect(row.deployTimeS).toBeLessThan(2.0);
+    expect(row.deployTimeS).toBeCloseTo(1.551, 3);
 
     // Explicitly show the reported value is NOT the last frame: pull the exact trajectory
     // computeSingleRow computed and confirm the last frame's ω has decayed far below the peak.

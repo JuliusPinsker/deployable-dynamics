@@ -26,10 +26,15 @@ async function gotoSimulation(page: Page) {
   await expect(page.getByText(FOLDED, { exact: true })).toBeVisible();
 }
 
-/** Click Deploy and wait until the panels report fully deployed (long-edge ≈ 0.4 s). */
+/**
+ * Click Deploy and wait until the panels report fully deployed. The calibrated
+ * physics-driven hinge latches long-edge at ≈ 1.7 s of simulated time; the 5×
+ * speed setting keeps this near-instant in wall-clock terms.
+ */
 async function deployToCompletion(page: Page) {
+  await page.getByRole('slider').first().press('End'); // Speed → 5×
   await page.getByRole('button', { name: 'Deploy', exact: true }).click();
-  await expect(page.getByText(DEPLOYED, { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(DEPLOYED, { exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
 /** Assert the sim was reseeded: folded panels, t=0, paused (Deploy button back). */
