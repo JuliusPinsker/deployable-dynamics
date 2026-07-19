@@ -155,7 +155,6 @@ export interface MaterialPreset {
   label: string;
   panelMass: number;        // kg per panel
   description: string;      // one-line physics description
-  example: string;          // real mission example
   massGrams: number;        // display value in grams
 }
 
@@ -165,7 +164,6 @@ export const MATERIAL_PRESETS: MaterialPreset[] = [
     label: 'FR4 PCB',
     panelMass: 0.032,
     description: 'Standard fibreglass PCB substrate with GaAs cells',
-    example: 'GomSpace NanoPower P110 - GOMX-1, Aalto-1',
     massGrams: 32,
   },
   {
@@ -173,7 +171,6 @@ export const MATERIAL_PRESETS: MaterialPreset[] = [
     label: 'Al / Kapton Flex',
     panelMass: 0.050,
     description: 'Aluminium facesheet with Kapton flex circuit and Si cells',
-    example: 'JPL MarCO (2018), ISARA (2017)',
     massGrams: 50,
   },
   {
@@ -181,7 +178,6 @@ export const MATERIAL_PRESETS: MaterialPreset[] = [
     label: 'CFRP Composite',
     panelMass: 0.020,
     description: 'Carbon fibre facesheet with GaAs cells - lightest option',
-    example: 'Planet Labs Dove, ESA OPS-SAT (2019)',
     massGrams: 20,
   },
 ];

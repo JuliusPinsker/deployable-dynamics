@@ -98,9 +98,6 @@ export default function LandingPage() {
                   <div className="text-xs text-muted-foreground mt-1">
                     {preset.massGrams} g - {preset.description}
                   </div>
-                  <div className="text-xs text-muted-foreground/70 mt-1 italic">
-                    {preset.example}
-                  </div>
                 </button>
               ))}
             </div>
