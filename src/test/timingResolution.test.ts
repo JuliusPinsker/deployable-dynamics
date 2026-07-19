@@ -80,7 +80,7 @@ describe('timestep represents the smallest supported δt study value (5 ms)', ()
       Math.max(...frames.map(f =>
         new Vector3(f.angularVelocity.x, f.angularVelocity.y, f.angularVelocity.z).length()));
     expect(peak(d5)).toBeGreaterThan(peak(ideal) + 1e-9);
-  });
+  }, 30000); // two 30 s production sims; default 5 s trips under full-suite load
 
   it('δt = 50 ms remains distinct from both 0 and 5 ms', () => {
     const ideal = runFullSimulation('short-edge', withDelays([0, 0, 0, 0]), 30);
@@ -94,7 +94,7 @@ describe('timestep represents the smallest supported δt study value (5 ms)', ()
     const t5 = firstMoveTime(withDelays([0, 0.005, 0, 0]), 1);
     const t50 = firstMoveTime(withDelays([0, 0.05, 0, 0]), 1);
     expect(Math.abs(t50 - t5 - 0.045)).toBeLessThanOrEqual(DT + 1e-12);
-  });
+  }, 30000); // three 30 s production sims; default 5 s trips under full-suite load
 
   it('reports dt vs dt/2 convergence for an asymmetric 5 ms timing case', () => {
     // Single delayed panel → asymmetric release transient. Halving the timestep
@@ -120,5 +120,5 @@ describe('timestep represents the smallest supported δt study value (5 ms)', ()
     expect(pHalf).toBeGreaterThan(0);
     expect(pHalf).toBeGreaterThan(pDt * 0.3);
     expect(pHalf).toBeLessThan(pDt * 3);
-  });
+  }, 60000); // includes a half-timestep 30 s sim; default 5 s trips under load
 });

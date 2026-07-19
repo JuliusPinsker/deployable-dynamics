@@ -4,6 +4,7 @@ import {
   createInitialState,
   stepSimulation,
   runFullSimulation,
+  FREE_FLOAT_MOMENTUM_ERROR_MAX,
 } from '../lib/physics/engine';
 import { DEFAULT_PARAMS, Vector3, type SimulationParams } from '../lib/physics/types';
 
@@ -99,10 +100,12 @@ describe('angular momentum conservation (physics-driven mode)', () => {
 
     const H1 = computeTotalAngularMomentum(state, config, PHYSICS_PARAMS);
 
-    // Relative error should be small (< 5%)
+    // Phase-B coupled EOM: conservation is structural; the bound is the
+    // free-float criterion (0.001 = 0.1%), tightened from the provisional 5%
+    // used by the old iterative-correction mechanism.
     const dH = { x: H1.x - H0.x, y: H1.y - H0.y, z: H1.z - H0.z };
     const relError = v3Mag(dH) / H0mag;
-    expect(relError).toBeLessThan(0.05);
+    expect(relError).toBeLessThan(FREE_FLOAT_MOMENTUM_ERROR_MAX);
   });
 });
 
@@ -120,7 +123,7 @@ describe('configurable initial tumble (ω₀)', () => {
     expect(v3Mag(rest.angularVelocity)).toBeCloseTo(0, 12);
   });
 
-  it('runFullSimulation seeds ω₀ and conserves momentum (relative < 5%)', () => {
+  it(`runFullSimulation seeds ω₀ and conserves momentum (relative ≤ ${FREE_FLOAT_MOMENTUM_ERROR_MAX} = ${FREE_FLOAT_MOMENTUM_ERROR_MAX * 100}%)`, () => {
     // ω₀ about Z (principal axis of the symmetric stowed long-edge).
     const omega0 = new Vector3(0, 0, 0.2);
     const frames = runFullSimulation('long-edge', PHYSICS_PARAMS, 2, [], omega0);
@@ -129,11 +132,11 @@ describe('configurable initial tumble (ω₀)', () => {
     // frames[0] is recorded AFTER the first step, so ω is ≈ ω₀ (not exactly).
     expect(frames[0].angularVelocity.z).toBeCloseTo(0.2, 2);
 
-    // The engine reports RELATIVE momentum error (dH / |H₀|) since |H₀| ≠ 0 here.
-    // NOTE: 5% is the current iterative-correction tolerance and is provisional —
-    // it will likely tighten to ~0.1% once Phase B replaces that mechanism.
+    // The engine reports RELATIVE momentum error (dH / |H₀|) since |H₀| ≠ 0
+    // here. Phase B replaced the iterative correction (provisional 5% bound)
+    // with the coupled EOM: the criterion is now the 0.1% free-float bound.
     for (const f of frames) {
-      expect(f.momentumError).toBeLessThan(0.05);
+      expect(f.momentumError).toBeLessThanOrEqual(FREE_FLOAT_MOMENTUM_ERROR_MAX);
     }
   });
 });

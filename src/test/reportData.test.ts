@@ -30,13 +30,13 @@ describe('computeSingleRow — peak-frame reporting', () => {
 
     // Calculated deployment time t₉₀ is a dynamics outcome (first frame at/after
     // 90% of the final panel angle, 50 ms frame cadence). Under the CALIBRATED
-    // default hinge (k = 4.45e-4, c = 2.23e-4, ζ ≈ 0.30 — engineering
-    // calibration, see calibration.ts) long-edge measures 1.551 s. Window
+    // default hinge (k = 7.729e-3, c = 4.947e-3, ζ ≈ 0.80 — engineering
+    // calibration, see calibration.ts) long-edge measures 1.251 s. Window
     // first (target 1.0–2.0 s), then a narrow regression pin on the selected
     // default; it must NOT jump to the window-end time.
     expect(row.deployTimeS).toBeGreaterThan(1.0);
     expect(row.deployTimeS).toBeLessThan(2.0);
-    expect(row.deployTimeS).toBeCloseTo(1.551, 3);
+    expect(row.deployTimeS).toBeCloseTo(1.251, 3);
 
     // Explicitly show the reported value is NOT the last frame: pull the exact trajectory
     // computeSingleRow computed and confirm the last frame's ω has decayed far below the peak.

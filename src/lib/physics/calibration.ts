@@ -20,15 +20,17 @@
 //  Free-travel hinge approximation used for ζ and ωₙ (documented, exact):
 //    the 1-DOF hinge equation the engine integrates in free travel is
 //        I_eff·θ̈ = k·(θ_stop − θ) − c·θ̇ − τ_f·sgn(θ̇)
-//    where I_eff is the panel inertia about the hinge axis as the engine maps
-//    it: the hinge axis is local X, so I_eff = Ixx of panelInertiaDiag =
-//        I_eff = (1/12)·m_panel·(span² + thickness²)
-//    (long-edge FR4: (1/12)(0.032)(0.3405² + 0.0025²) ≈ 3.0917e-4 kg·m²).
+//    where I_eff is the panel inertia about the HINGE-EDGE line — the
+//    rectangular-plate-about-its-edge moment via the parallel-axis theorem
+//    (outward reach R = spec.size[2], thickness t = spec.size[1]):
+//        I_eff = (1/3)·m_panel·R² + (1/12)·m_panel·t²
+//    (long-edge FR4: (1/3)(0.032)(0.3405²) + … ≈ 1.2367e-3 kg·m²).
 //    Then  ωₙ = √(k/I_eff)  [rad/s]  and  ζ = c / (2·√(k·I_eff))  [-].
-//    NOTE (known Phase-B item): whether Ixx is the physically correct
-//    hinge-axis moment is the IS2 axis-mapping question deferred to Phase B;
-//    the engine is self-consistent with this mapping, and the calibration is
-//    defined against the engine as it exists.
+//    RESOLVED (Phase B): the pre-Phase-B engine used the CENTROIDAL moment
+//    (1/12)·m·(R²+t²) here — missing the parallel-axis shift to the hinge
+//    edge, a uniform ≈4× underestimate. The axis mapping is now verified by
+//    independent per-configuration tests (src/test/panelInertia.test.ts) and
+//    this module's formula matches the corrected engine mapping exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -45,8 +47,10 @@ import {
 
 /**
  * Effective free-travel hinge inertia (kg·m²) exactly as the production engine
- * maps it (hinge axis = panel-local X → diagonal entry Ixx of the panel
- * inertia tensor about the hinge edge).
+ * maps it (hinge axis = panel-local X → the panel's moment about the HINGE
+ * EDGE, i.e. the rectangular-plate-about-its-edge parallel-axis result).
+ * Re-derived here independently from the raw spec geometry so a regression in
+ * the engine's mapping shows up as a mismatch against this module's ωₙ/ζ.
  */
 export function hingeFreeTravelInertia(
   params: SimulationParams = DEFAULT_PARAMS,
@@ -54,9 +58,10 @@ export function hingeFreeTravelInertia(
   panelIndex = 0,
 ): number {
   const spec = getPanelSpecs(config, params)[panelIndex];
-  const span = spec.size[2];
+  const outwardReach = spec.size[2];
   const thickness = spec.size[1];
-  return (1 / 12) * params.panelMass * (span * span + thickness * thickness);
+  return (1 / 3) * params.panelMass * outwardReach * outwardReach
+    + (1 / 12) * params.panelMass * thickness * thickness;
 }
 
 /** ωₙ = √(k/I_eff) for the free-travel hinge approximation (rad/s). */

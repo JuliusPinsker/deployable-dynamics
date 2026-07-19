@@ -175,9 +175,10 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     const dH = { x: Hfinal.x - H0.x, y: Hfinal.y - H0.y, z: Hfinal.z - H0.z };
     const dHmag = v3Mag(dH);
 
-    // Relative error: |ΔH|/|H₀| < 2% over 1 second
-    // Conservation correction significantly reduces drift vs pure RK4
-    expect(dHmag / H0mag).toBeLessThan(0.02);
+    // Phase-B coupled EOM: |ΔH|/|H₀| ≤ 0.1% (tightened from the old
+    // iterative-correction 2% bound; this exercises the genuine |H₀| > 0
+    // relative branch with an off-principal-axis spin).
+    expect(dHmag / H0mag).toBeLessThanOrEqual(0.001);
   });
 });
 
