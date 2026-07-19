@@ -14,6 +14,7 @@ import {
   type SimulationParams,
   type SpacecraftState,
   type PanelState,
+  type HingeParams,
   Vector3,
   Quaternion,
   Euler,
@@ -22,6 +23,22 @@ import {
 import { MathUtils } from 'three';
 
 import { getPanelSpecs } from './panelLayouts';
+import {
+  type Mat3,
+  mat3Zero,
+  mat3Clone,
+  mat3AddOuterInPlace,
+  mat3MulVec,
+  solve3x3,
+} from './linearAlgebra';
+
+/**
+ * Free-float angular-momentum conservation criterion (dimensionless):
+ * |H(t) − H(0)| / max(|H(0)|, H_scale) must stay ≤ this bound
+ * (0.001 = 0.1%). With zero external torque the coupled EOM conserves H
+ * structurally; this bound is the allowance for integration truncation.
+ */
+export const FREE_FLOAT_MOMENTUM_ERROR_MAX = 0.001;
 
 /**
  * Post-deployment observation window (seconds). Once every panel has deployed (or
@@ -142,20 +159,76 @@ export function accumulateOmegaPeak(
 }
 
 /**
- * Diagonal inertia for a rectangular panel plate about the hinge edge.
- * Panel body frame: X = outward (L), Y = thickness (t), Z = span (W).
- * Hinge runs along Z at the X = 0 edge (parallel-axis theorem applied).
+ * Diagonal CENTROIDAL principal inertia for a rectangular panel plate, about
+ * the panel's own centre of mass, in the panel's REAL local frame (verified
+ * against the layout specs and the renderer's boxGeometry mapping):
  *
- *   Ixx = (1/12) m (W² + t²)
- *   Iyy = (1/3)  m L² + (1/12) m W²
- *   Izz = (1/3)  m L² + (1/12) m t²     ← moment about hinge axis
+ *   local X = hinge/rotation axis   (extent H = spec.size[0], the short edge)
+ *   local Y = thickness             (extent t = spec.size[1])
+ *   local Z = outward/deploy        (extent R = spec.size[2]; panel occupies
+ *                                    Z ∈ [-R, 0], hinge edge line at Z = 0)
+ *
+ * In the Bascom–Schaub (AAS 22-725) panel-frame naming (ŝ2 = hinge axis,
+ * ŝ1 along the CM–hinge line, ŝ3 completing the right-handed set):
+ *
+ *   Ixx = I_S2 = (1/12) m (t² + R²)   ← about the hinge-parallel axis THROUGH THE CM
+ *   Iyy = I_S3 = (1/12) m (H² + R²)   ← about the thickness axis through the CM
+ *   Izz = I_S1 = (1/12) m (H² + t²)   ← about the outward axis through the CM
+ */
+function panelInertiaCentroidDiag(m: number, H: number, t: number, R: number): Vector3 {
+  return new Vector3(
+    (1 / 12) * m * (t * t + R * R),
+    (1 / 12) * m * (H * H + R * R),
+    (1 / 12) * m * (H * H + t * t),
+  );
+}
+
+/**
+ * Diagonal inertia for a rectangular panel plate about the HINGE-EDGE line,
+ * derived from the centroidal tensor by the parallel-axis theorem. The panel
+ * CM sits at local (0, 0, −R/2), i.e. offset d = R/2 from the hinge line
+ * purely along local Z, so the shift m·(R/2)² applies to the X and Y moments
+ * and leaves Z unchanged:
+ *
+ *   Ixx = (1/12) m (t² + R²) + m (R/2)² = (1/3) m R² + (1/12) m t²   ← hinge axis (Ieff = I_S2 + m·d²)
+ *   Iyy = (1/12) m (H² + R²) + m (R/2)² = (1/12) m H² + (1/3) m R²
+ *   Izz = (1/12) m (H² + t²)                                          ← outward axis (no shift)
+ *
+ * NOTE (Phase-B bug fix): the previous implementation returned the CENTROIDAL
+ * moment (1/12)m(R²+t²) as Ixx — missing the m·(R/2)² parallel-axis term, a
+ * uniform ≈4× underestimate of the true hinge-axis inertia. The hinge
+ * calibration (k, c, friction in DEFAULT_PARAMS) was re-derived against the
+ * corrected value; see the calibration block comment in types.ts.
+ *
+ * Parameter names keep the existing call-site convention:
+ * L = spec.size[0] (hinge-axis extent H), W = spec.size[2] (outward extent R),
+ * t = spec.size[1] (thickness).
  */
 function panelInertiaDiag(m: number, L: number, W: number, t: number): Vector3 {
-  return new Vector3(
-    (1 / 12) * m * (W * W + t * t),
-    (1 / 3) * m * L * L + (1 / 12) * m * W * W,
-    (1 / 3) * m * L * L + (1 / 12) * m * t * t,
-  );
+  const cm = panelInertiaCentroidDiag(m, L, t, W);
+  const shift = m * (W / 2) * (W / 2);
+  return new Vector3(cm.x + shift, cm.y + shift, cm.z);
+}
+
+/**
+ * The single panel-orientation composition used EVERYWHERE a panel's world
+ * orientation (or a panel-local vector's world direction) is needed:
+ *
+ *   q_panel_world = q_body ⊗ q_mount ⊗ q_hinge(θ)
+ *
+ * (q_body outermost, q_hinge innermost — the engine's verified convention;
+ * three.js a.multiply(b) sets a = a⊗b.) Centralised so the coupled solver,
+ * CoM/inertia assembly, momentum diagnostic, and renderer-facing panel state
+ * can never drift onto different multiplication orders.
+ */
+export function panelWorldQuaternion(
+  qBody: Quaternion,
+  qMount: Quaternion,
+  theta: number,
+  aLocal: Vector3,
+): Quaternion {
+  const qHinge = new Quaternion().setFromAxisAngle(aLocal, theta);
+  return qBody.clone().multiply(qMount.clone()).multiply(qHinge).normalize();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,17 +250,37 @@ function panelInertiaDiag(m: number, L: number, W: number, t: number): Vector3 {
  * Consumers must NOT mutate the returned vectors/quaternions (engine code
  * always `.clone()`s before applying rotations).
  */
-interface PanelKinematics {
+export interface PanelKinematics {
   spec: ReturnType<typeof getPanelSpecs>[number];
   qMount: Quaternion;   // mounting rotation from spec.rot (local → body frame)
-  aLocal: Vector3;      // hinge axis, local frame (unit)
+  aLocal: Vector3;      // hinge axis ŝ2, local frame (unit)
   aBody: Vector3;       // hinge axis, body frame (qMount-rotated, unit)
-  Ip: Vector3;          // diagonal panel inertia about the hinge edge (uses params.panelMass)
+  Ip: Vector3;          // diagonal panel inertia about the HINGE edge (Ip.x = Ieff = I_S2 + m·d²)
+  /**
+   * Diagonal CENTROIDAL panel inertia (about the panel CM): a genuinely
+   * separate representation from Ip — (x, y, z) = (I_S2, I_S3, I_S1) in the
+   * paper's naming. Never interchangeable with Ip: Ieff = Ip.x belongs only
+   * in the 1/Ieff prefactors; the coupled-EOM numerator terms (K, gyroscopic
+   * cross-term) require these centroidal values.
+   */
+  IpCentroid: Vector3;
+  /** Hinge-line → panel-CM distance d = |spec.pos| (= R/2 for every layout). */
+  d: number;
+  /**
+   * ŝ1, LOCAL frame (pre-mount, pre-hinge): the paper's convention is
+   * r_S/H = −d·ŝ1, so ŝ1 = −pos/|pos|. Sign varies per panel (double-long-
+   * edge stage-2 children fold back, pos = +R/2 ẑ) — never hardcode. This is
+   * only the fixed local reference; the world-frame ŝ1 must be re-derived at
+   * each integrator stage via panelWorldQuaternion (it rotates with θ).
+   */
+  s1Local: Vector3;
+  /** ŝ3 = ŝ1 × ŝ2, LOCAL frame (completes the right-handed paper triad). */
+  s3Local: Vector3;
 }
 
 const kinematicsCache = new WeakMap<SimulationParams, Map<ConfigType, PanelKinematics[]>>();
 
-function getPanelKinematics(config: ConfigType, params: SimulationParams): PanelKinematics[] {
+export function getPanelKinematics(config: ConfigType, params: SimulationParams): PanelKinematics[] {
   let byConfig = kinematicsCache.get(params);
   if (!byConfig) {
     byConfig = new Map();
@@ -200,7 +293,14 @@ function getPanelKinematics(config: ConfigType, params: SimulationParams): Panel
       const aLocal = hingeAxisUnit(spec.axis).normalize();
       const aBody = aLocal.clone().applyQuaternion(qMount.clone());
       const Ip = panelInertiaDiag(params.panelMass, spec.size[0], spec.size[2], spec.size[1]);
-      return { spec, qMount, aLocal, aBody, Ip };
+      const IpCentroid = panelInertiaCentroidDiag(
+        params.panelMass, spec.size[0], spec.size[1], spec.size[2],
+      );
+      const pos = new Vector3(spec.pos[0], spec.pos[1], spec.pos[2]);
+      const d = pos.length();
+      const s1Local = d > 0 ? pos.clone().multiplyScalar(-1 / d) : new Vector3(0, 0, 1);
+      const s3Local = s1Local.clone().cross(aLocal);
+      return { spec, qMount, aLocal, aBody, Ip, IpCentroid, d, s1Local, s3Local };
     });
     byConfig.set(config, kin);
   }
@@ -221,6 +321,456 @@ function applyInverseInertia(Idiag: Vector3, q: Quaternion, torqueWorld: Vector3
 /** I_body · ω  (diagonal body frame). */
 function applyInertia(Idiag: Vector3, w: Vector3): Vector3 {
   return new Vector3(Idiag.x * w.x, Idiag.y * w.y, Idiag.z * w.z);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Phase-B coupled hub–panel EOM (Bascom & Schaub AAS 22-725, rotational-only,
+//  L_B = 0 exactly, u = 0)
+//
+//  Every active hinge DOF and the hub attitude are integrated TOGETHER as one
+//  extended state y = {q, ω, θ_i, θ̇_i} through classical RK4; each stage
+//  solves the coupled 3×3 rotational system
+//
+//      [D]·ω̇ = v_r,   [D] = [I_sc,B] + Σ_i K_i ⊗ b_θ,i
+//
+//  and back-substitutes θ̈_i = b_θ,i·ω̇ + c_θ,i (paper Eqs. 12–24 specialised
+//  to a pinned, force-free body reference point B).
+//
+//  The implementation uses the member-summed generalisation of the paper's
+//  single-panel coefficients: an "assembly" is an active hinge DOF plus every
+//  panel rigidly riding it (e.g. the folded stage-2 panel riding a deploying
+//  double-long-edge stage-1 panel). For each member j, with world-frame
+//  hinge axis ŝ2, hinge point r_H, member CM r_j, member centroidal tensor
+//  M_j (world), and u_j = ŝ2×(r_j − r_H):
+//
+//      Ieff = Σ_j [ ŝ2·M_j·ŝ2 + m·|u_j|² ]          (∂²T/∂θ̇² — hinge-referenced)
+//      K    = Σ_j [ M_j·ŝ2 + m·(r_j × u_j) ]         (∂H/∂θ̇ — Eq. 20's vector)
+//      b_θ  = −K / Ieff                              (≡ paper Eq. 14; for a lone
+//                                                     panel K = Ieff·ŝ2 + m·d·(r_H/B×ŝ3),
+//                                                     so b_θ = −ŝ2 − (m·d/Ieff)(r_H/B×ŝ3),
+//                                                     and b_θ·ŝ2 = −1 when r_H/B = 0)
+//      c_θ  = (1/Ieff)[ τ_hinge + Σ_j ( ω·(ŝ2×M_j·ω)
+//                       + m((r_j·u_j)|ω|² − (r_j·ω)(u_j·ω)) ) ]
+//                                                    (≡ Eq. 15's gyroscopic
+//                                                     (I_S3−I_S1+m·d²)ω_S1ω_S3 −
+//                                                     m·d·ŝ3·(ω×(ω×r_H/B)) terms)
+//
+//  v_r = Σ_active [ −θ̇(ω×K) − c_θ·K − θ̇²·Σ_j( ŝ2×(M_j·ŝ2) + m·r_j×(ŝ2×u_j) ) ]
+//        − ω×(I_sc,B·ω) − Σ_active θ̇·(∂I_A/∂θ)·ω
+//
+//  Sign note: conservation (dH/dt = 0) and an independent planar-Lagrangian
+//  reference both give the θ̇² transport term with a MINUS sign; the paper's
+//  printed Eq. 22 shows "+ m_sp·d·θ̇²·r_S/B×ŝ1". The minus form is what the
+//  brute-force reference tests validate. The [I′_sc,B]·ω shape-rate term is
+//  retained explicitly (dropping it fails the same reference comparison).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The calibrated torsional-hinge torque law — the SINGLE deployment torque
+ * model (spring or bistable + preload, elastic/damped mechanical stop,
+ * viscous damping, Coulomb friction), evaluated at an arbitrary (θ, θ̇).
+ * Identical branch structure and constants to the pre-Phase-B law; extracted
+ * so the coupled integrator can evaluate it at every RK4 stage state.
+ *
+ * Returns the total hinge torque on the panel about +ŝ2 and the stop-contact
+ * magnitude (telemetry).
+ */
+export function hingeTorqueTotal(
+  theta: number,
+  omegaRel: number,
+  stopAngle: number,
+  h: HingeParams,
+): { tau: number; contact: number } {
+  let tauCons: number;
+  if (h.hingeModel === 'bistable' && h.bistability) {
+    // Bistable tape-spring double-well: τ(θ) = −2A·θ·(θ−θmax)·(2θ−θmax) + preload
+    // Ref: Seffen & Pellegrino 1999; Mallikarachchi & Pellegrino 2011
+    const A = h.bistability.bistabilityCoeff;
+    tauCons = -2 * A * theta * (theta - stopAngle) * (2 * theta - stopAngle) + h.preloadTorque;
+  } else {
+    tauCons = h.springConstant * (stopAngle - theta) + h.preloadTorque;
+  }
+  let cTotal = h.dampingCoeff;
+  let contact = 0;
+  if (theta >= stopAngle) {
+    const penetration = theta - stopAngle;
+    tauCons -= h.stopStiffness * penetration;
+    cTotal += h.stopDamping;
+    contact = Math.abs(-h.stopStiffness * penetration - h.stopDamping * omegaRel);
+  }
+  const friction = Math.sign(omegaRel) * h.frictionCoeff;
+  return { tau: tauCons - cTotal * omegaRel - friction, contact };
+}
+
+/**
+ * Stage-local panel geometry: every vector a coupled-EOM stage evaluation
+ * needs, derived fresh from the CURRENT (qBody, θ[]) — including the full
+ * hierarchical parent chain for child panels (a child's mounting frame and
+ * hinge position ride its parent's current angle). Nothing here may be
+ * cached across integrator stages: ŝ1/ŝ3, r_S/B and the panel orientation
+ * all rotate with θ.
+ */
+export interface PanelStageGeometry {
+  /** Panel orientation in the BODY frame: qMountEff ⊗ qHinge(θ). */
+  qInBody: Quaternion;
+  /** Panel orientation in the WORLD frame: qBody ⊗ qInBody. */
+  qPanelWorld: Quaternion;
+  /** Hinge pivot position, body frame (parent-chain resolved). */
+  rHingeBody: Vector3;
+  /** Hinge pivot position r_{H/B}, world frame. */
+  rHingeWorld: Vector3;
+  /** Panel CM position r_{S/B}, world frame. */
+  rCmWorld: Vector3;
+  /** ŝ2 — hinge axis, world frame (unit). */
+  s2World: Vector3;
+  /** ŝ1 — paper convention r_S/H = −d·ŝ1, world frame (rotates with θ). */
+  s1World: Vector3;
+  /** ŝ3 = ŝ1 × ŝ2, world frame (rotates with θ). */
+  s3World: Vector3;
+}
+
+const IDENTITY_Q = new Quaternion();
+
+export function computePanelGeometryAtStage(
+  kinematics: PanelKinematics[],
+  qBody: Quaternion,
+  thetas: number[],
+): PanelStageGeometry[] {
+  const out: PanelStageGeometry[] = [];
+  for (let i = 0; i < kinematics.length; i++) {
+    const kin = kinematics[i];
+    const spec = kin.spec;
+
+    // Effective mounting (body frame) and hinge position: child panels chain
+    // through their parent's CURRENT orientation (specs order parents first).
+    let qMountEff: Quaternion;
+    let rHingeBody: Vector3;
+    if (spec.parentIndex !== undefined && spec.hingeOffset !== undefined) {
+      const parent = out[spec.parentIndex];
+      qMountEff = parent.qInBody.clone().multiply(kin.qMount.clone());
+      rHingeBody = parent.rHingeBody.clone().add(
+        new Vector3(spec.hingeOffset[0], spec.hingeOffset[1], spec.hingeOffset[2])
+          .applyQuaternion(parent.qInBody),
+      );
+    } else {
+      qMountEff = kin.qMount;
+      rHingeBody = new Vector3(spec.hinge[0], spec.hinge[1], spec.hinge[2]);
+    }
+
+    const qInBody = panelWorldQuaternion(IDENTITY_Q, qMountEff, thetas[i], kin.aLocal);
+    const qPanelWorld = qBody.clone().multiply(qInBody.clone()).normalize();
+    const rHingeWorld = rHingeBody.clone().applyQuaternion(qBody);
+    const rCmWorld = rHingeWorld.clone().add(
+      new Vector3(spec.pos[0], spec.pos[1], spec.pos[2]).applyQuaternion(qPanelWorld),
+    );
+    // ŝ2 is invariant under the panel's own hinge rotation (a vector is fixed
+    // under rotation about itself), so rotating aLocal by the full panel
+    // quaternion equals rotating by qBody ⊗ qMountEff — one code path.
+    const s2World = kin.aLocal.clone().applyQuaternion(qPanelWorld);
+    const s1World = kin.s1Local.clone().applyQuaternion(qPanelWorld);
+    const s3World = kin.s3Local.clone().applyQuaternion(qPanelWorld);
+
+    out.push({ qInBody, qPanelWorld, rHingeBody, rHingeWorld, rCmWorld, s2World, s1World, s3World });
+  }
+  return out;
+}
+
+/** dst += R(q)·diag·R(q)ᵀ, built as Σ_k diag_k · (ê_k′ ⊗ ê_k′). */
+function mat3AddRotatedDiagInPlace(dst: Mat3, q: Quaternion, diag: Vector3): void {
+  const ex = new Vector3(1, 0, 0).applyQuaternion(q);
+  const ey = new Vector3(0, 1, 0).applyQuaternion(q);
+  const ez = new Vector3(0, 0, 1).applyQuaternion(q);
+  mat3AddOuterInPlace(dst, ex.clone().multiplyScalar(diag.x), ex);
+  mat3AddOuterInPlace(dst, ey.clone().multiplyScalar(diag.y), ey);
+  mat3AddOuterInPlace(dst, ez.clone().multiplyScalar(diag.z), ez);
+}
+
+/** dst += m·(|r|²·E − r ⊗ r)  (parallel-axis shift of a centroidal tensor to B). */
+function mat3AddParallelAxisInPlace(dst: Mat3, m: number, r: Vector3): void {
+  const mr2 = m * r.lengthSq();
+  dst.rows[0].x += mr2;
+  dst.rows[1].y += mr2;
+  dst.rows[2].z += mr2;
+  mat3AddOuterInPlace(dst, r.clone().multiplyScalar(-m), r);
+}
+
+/** M_j·v for a member's world-frame centroidal tensor (rotate–scale–rotate). */
+function applyCentroidTensor(kin: PanelKinematics, geo: PanelStageGeometry, v: Vector3): Vector3 {
+  const local = v.clone().applyQuaternion(geo.qPanelWorld.clone().conjugate());
+  return applyInertia(kin.IpCentroid, local).applyQuaternion(geo.qPanelWorld);
+}
+
+/**
+ * Total system inertia about body reference point B (world frame, symmetric
+ * 3×3): hub (CM at B, no shift) + every panel's world-rotated CENTROIDAL
+ * tensor parallel-axis-shifted by its current CM position. Panels at their
+ * current (chain-resolved) orientation, whatever their deployment status.
+ */
+export function computeSystemInertiaAboutB(
+  state: SpacecraftState,
+  config: ConfigType,
+  params: SimulationParams = DEFAULT_PARAMS,
+): Mat3 {
+  const kinematics = getPanelKinematics(config, params);
+  const qBody = state._bodyQ
+    ? new Quaternion(state._bodyQ.x, state._bodyQ.y, state._bodyQ.z, state._bodyQ.w)
+    : new Quaternion().setFromEuler(new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'));
+  const thetas = state.panels.map(p => (p.stuck ? p.stuckAngle : p.angle));
+  const geo = computePanelGeometryAtStage(kinematics, qBody, thetas);
+  return systemInertiaFromGeometry(kinematics, geo, qBody, params);
+}
+
+function systemInertiaFromGeometry(
+  kinematics: PanelKinematics[],
+  geo: PanelStageGeometry[],
+  qBody: Quaternion,
+  params: SimulationParams,
+): Mat3 {
+  const Isc = mat3Zero();
+  mat3AddRotatedDiagInPlace(Isc, qBody, bodyInertiaDiag(params));
+  for (let j = 0; j < kinematics.length; j++) {
+    mat3AddRotatedDiagInPlace(Isc, geo[j].qPanelWorld, kinematics[j].IpCentroid);
+    mat3AddParallelAxisInPlace(Isc, params.panelMass, geo[j].rCmWorld);
+  }
+  return Isc;
+}
+
+/**
+ * Coupled coefficients for one active hinge DOF (assembly = the active panel
+ * plus every member rigidly riding its hinge), all in the world frame.
+ */
+export interface CoupledCoefficients {
+  /** Ieff = ∂²T/∂θ̇² (kg·m²) — the ONLY place the hinge-referenced inertia enters. */
+  Ieff: number;
+  /** K = ∂H/∂θ̇ (paper Eq. 20's I_S2·ŝ2 + m·d·(r_S/B×ŝ3), member-summed). */
+  K: Vector3;
+  /** b_θ = −K/Ieff (≡ paper Eq. 14). */
+  bTheta: Vector3;
+  /** c_θ (rad/s²) — hinge torque + gyroscopic/centripetal terms, /Ieff. */
+  cTheta: number;
+  /** a_θ = −(Σ m·u_j)/Ieff — translational-coupling diagnostic only (unused by the solve). */
+  aTheta: Vector3;
+  /** v_r transport vector: Σ_j [ ŝ2×(M_j·ŝ2) + m·r_j×(ŝ2×u_j) ] (θ̇²-term, minus sign applied in v_r). */
+  dKdTheta: Vector3;
+}
+
+export function computeAssemblyCoefficients(
+  members: number[],
+  kinematics: PanelKinematics[],
+  geo: PanelStageGeometry[],
+  omega: Vector3,
+  tauHinge: number,
+  panelMass: number,
+  hingeIndex: number,
+): CoupledCoefficients {
+  const s2 = geo[hingeIndex].s2World;
+  const rH = geo[hingeIndex].rHingeWorld;
+
+  let Ieff = 0;
+  const K = new Vector3();
+  const aSum = new Vector3();
+  const dKdTheta = new Vector3();
+  let gyro = 0;
+  const omega2 = omega.lengthSq();
+
+  for (const j of members) {
+    const kin = kinematics[j];
+    const g = geo[j];
+    const r = g.rCmWorld;
+    const rho = r.clone().sub(rH);
+    const u = new Vector3().crossVectors(s2, rho);
+    const Ms2 = applyCentroidTensor(kin, g, s2);
+    const Momega = applyCentroidTensor(kin, g, omega);
+
+    Ieff += s2.dot(Ms2) + panelMass * u.lengthSq();
+    K.add(Ms2).addScaledVector(new Vector3().crossVectors(r, u), panelMass);
+    aSum.addScaledVector(u, panelMass);
+    // ∂K/∂θ member term: ŝ2×(M·ŝ2) + m·r×(ŝ2×u)
+    dKdTheta.add(new Vector3().crossVectors(s2, Ms2));
+    dKdTheta.addScaledVector(new Vector3().crossVectors(r, new Vector3().crossVectors(s2, u)), panelMass);
+    // c_θ gyroscopic/centripetal member term: ω·(ŝ2×(M·ω)) + m[(r·u)|ω|² − (r·ω)(u·ω)]
+    gyro += omega.dot(new Vector3().crossVectors(s2, Momega));
+    gyro += panelMass * (r.dot(u) * omega2 - r.dot(omega) * u.dot(omega));
+  }
+
+  const bTheta = K.clone().multiplyScalar(-1 / Ieff);
+  const cTheta = (tauHinge + gyro) / Ieff;
+  const aTheta = aSum.multiplyScalar(-1 / Ieff);
+  return { Ieff, K, bTheta, cTheta, aTheta, dKdTheta };
+}
+
+/** Extended-state derivative result for one coupled stage evaluation. */
+export interface CoupledDerivResult {
+  dq: Quaternion;
+  dOmega: Vector3;
+  /** dθ_i/dt (= θ̇_i for active panels, 0 otherwise). */
+  dTheta: number[];
+  /** dθ̇_i/dt (= θ̈_i for active panels, 0 otherwise). */
+  dThetaDot: number[];
+}
+
+/**
+ * Evaluate the complete coupled right-hand side at one candidate stage state.
+ * `hingeOf[j]` names the active panel whose hinge drives panel j this step
+ * (j itself when active, the active ancestor for a rigid rider, −1 when the
+ * panel is rigid with the hub). The hinge torque law is re-evaluated at the
+ * STAGE-LOCAL (θ, θ̇) — nothing about the torque is frozen at step start.
+ */
+export function coupledDeriv(
+  qBody: Quaternion,
+  omegaBody: Vector3,
+  thetas: number[],
+  thetaDots: number[],
+  hingeOf: number[],
+  stopAngles: number[],
+  kinematics: PanelKinematics[],
+  params: SimulationParams,
+): CoupledDerivResult {
+  const geo = computePanelGeometryAtStage(kinematics, qBody, thetas);
+  const Isc = systemInertiaFromGeometry(kinematics, geo, qBody, params);
+  const m = params.panelMass;
+
+  // v_r accumulator: −ω×(I_sc,B·ω) first (whole-system gyroscopic term).
+  const vr = new Vector3().crossVectors(omegaBody, mat3MulVec(Isc, omegaBody)).multiplyScalar(-1);
+  const D = mat3Clone(Isc);
+
+  const dTheta = new Array<number>(thetas.length).fill(0);
+  const dThetaDot = new Array<number>(thetas.length).fill(0);
+  const activeCoeffs: { i: number; coeffs: CoupledCoefficients }[] = [];
+
+  for (let i = 0; i < kinematics.length; i++) {
+    if (hingeOf[i] !== i) continue; // not an active hinge DOF
+    const members: number[] = [];
+    for (let j = 0; j < kinematics.length; j++) if (hingeOf[j] === i) members.push(j);
+
+    const thetaDot = thetaDots[i];
+    const { tau } = hingeTorqueTotal(thetas[i], thetaDot, stopAngles[i], params.hinge);
+    const coeffs = computeAssemblyCoefficients(members, kinematics, geo, omegaBody, tau, m, i);
+    activeCoeffs.push({ i, coeffs });
+
+    // [D] += K ⊗ b_θ
+    mat3AddOuterInPlace(D, coeffs.K, coeffs.bTheta);
+    // v_r += −θ̇·(ω×K) − c_θ·K − θ̇²·(∂K/∂θ)
+    vr.addScaledVector(new Vector3().crossVectors(omegaBody, coeffs.K), -thetaDot);
+    vr.addScaledVector(coeffs.K, -coeffs.cTheta);
+    vr.addScaledVector(coeffs.dKdTheta, -thetaDot * thetaDot);
+
+    // −[I′_sc,B]·ω shape-rate term, member-summed:
+    // (∂I_pB/∂θ)·ω = ŝ2×(M·ω) − M·(ŝ2×ω) + m·(2(r·u)ω − (r·ω)u − (u·ω)r)
+    const s2 = geo[i].s2World;
+    const rHinge = geo[i].rHingeWorld;
+    for (const j of members) {
+      const g = geo[j];
+      const r = g.rCmWorld;
+      const rho = r.clone().sub(rHinge);
+      const u = new Vector3().crossVectors(s2, rho);
+      const Momega = applyCentroidTensor(kinematics[j], g, omegaBody);
+      const s2xO = new Vector3().crossVectors(s2, omegaBody);
+      const IdotOmega = new Vector3()
+        .crossVectors(s2, Momega)
+        .sub(applyCentroidTensor(kinematics[j], g, s2xO))
+        .addScaledVector(omegaBody, 2 * m * r.dot(u))
+        .addScaledVector(u, -m * r.dot(omegaBody))
+        .addScaledVector(r, -m * u.dot(omegaBody));
+      vr.addScaledVector(IdotOmega, -thetaDot);
+    }
+  }
+
+  const dOmega = solve3x3(D, vr);
+
+  for (const { i, coeffs } of activeCoeffs) {
+    dTheta[i] = thetaDots[i];
+    dThetaDot[i] = coeffs.bTheta.dot(dOmega) + coeffs.cTheta;
+  }
+
+  // Kinematic equation (world-frame convention, unchanged): dq/dt = ½·[0,ω]⊗q
+  const omegaQuat = new Quaternion(omegaBody.x, omegaBody.y, omegaBody.z, 0);
+  const qDot = omegaQuat.multiply(qBody.clone());
+  const dq = new Quaternion(0.5 * qDot.x, 0.5 * qDot.y, 0.5 * qDot.z, 0.5 * qDot.w);
+
+  return { dq, dOmega, dTheta, dThetaDot };
+}
+
+/**
+ * Deterministic substep count for the coupled RK4, from params/config alone
+ * (never from runtime state — reproducibility). Explicit RK4's stability
+ * region bounds dt·λ for the stiffest hinge mode; the mechanical stop's
+ * damping on the lightest panel is the binding case (e.g. CFRP short-edge
+ * reaches dt·c_stop/Ieff ≈ 3.0 > RK4's ≈2.79 real-axis limit at 1/1200 s).
+ * Substeps divide dt so the worst mode stays ≤ ~1.4 with margin.
+ */
+export function computeCoupledSubstepCount(config: ConfigType, params: SimulationParams): number {
+  const kinematics = getPanelKinematics(config, params);
+  const h = params.hinge;
+  let zMax = 0;
+  for (const kin of kinematics) {
+    const Ieff = kin.Ip.x; // single-member minimum; assemblies only add inertia
+    const stopAngle = kin.spec.maxAngle ?? h.stopAngle;
+    const springSlope = (h.hingeModel === 'bistable' && h.bistability)
+      ? 2 * h.bistability.bistabilityCoeff * stopAngle * stopAngle
+      : h.springConstant;
+    const zDamp = params.timeStep * (h.dampingCoeff + h.stopDamping) / Ieff;
+    const zOsc = params.timeStep * Math.sqrt((springSlope + h.stopStiffness) / Ieff);
+    zMax = Math.max(zMax, zDamp, zOsc);
+  }
+  return Math.max(1, Math.ceil(zMax / 1.4));
+}
+
+/** One classical RK4 step of the full coupled extended state {q, ω, θ, θ̇}. */
+export function integrateCoupledSystemRK4(
+  qBody: Quaternion,
+  omegaBody: Vector3,
+  thetas: number[],
+  thetaDots: number[],
+  hingeOf: number[],
+  stopAngles: number[],
+  kinematics: PanelKinematics[],
+  params: SimulationParams,
+  dt: number,
+): { qBodyNew: Quaternion; omegaBodyNew: Vector3; thetasNew: number[]; thetaDotsNew: number[] } {
+  const n = thetas.length;
+
+  function advance(
+    dq: Quaternion, dOmega: Vector3, dTh: number[], dThD: number[], s: number,
+  ): { q: Quaternion; w: Vector3; th: number[]; thd: number[] } {
+    const q = new Quaternion(
+      qBody.x + dq.x * s, qBody.y + dq.y * s, qBody.z + dq.z * s, qBody.w + dq.w * s,
+    ).normalize();
+    const w = omegaBody.clone().addScaledVector(dOmega, s);
+    const th = thetas.map((t, i) => t + dTh[i] * s);
+    const thd = thetaDots.map((t, i) => t + dThD[i] * s);
+    return { q, w, th, thd };
+  }
+
+  const k1 = coupledDeriv(qBody, omegaBody, thetas, thetaDots, hingeOf, stopAngles, kinematics, params);
+  const s2 = advance(k1.dq, k1.dOmega, k1.dTheta, k1.dThetaDot, 0.5 * dt);
+  const k2 = coupledDeriv(s2.q, s2.w, s2.th, s2.thd, hingeOf, stopAngles, kinematics, params);
+  const s3 = advance(k2.dq, k2.dOmega, k2.dTheta, k2.dThetaDot, 0.5 * dt);
+  const k3 = coupledDeriv(s3.q, s3.w, s3.th, s3.thd, hingeOf, stopAngles, kinematics, params);
+  const s4 = advance(k3.dq, k3.dOmega, k3.dTheta, k3.dThetaDot, dt);
+  const k4 = coupledDeriv(s4.q, s4.w, s4.th, s4.thd, hingeOf, stopAngles, kinematics, params);
+
+  const qBodyNew = new Quaternion(
+    qBody.x + (dt / 6) * (k1.dq.x + 2 * k2.dq.x + 2 * k3.dq.x + k4.dq.x),
+    qBody.y + (dt / 6) * (k1.dq.y + 2 * k2.dq.y + 2 * k3.dq.y + k4.dq.y),
+    qBody.z + (dt / 6) * (k1.dq.z + 2 * k2.dq.z + 2 * k3.dq.z + k4.dq.z),
+    qBody.w + (dt / 6) * (k1.dq.w + 2 * k2.dq.w + 2 * k3.dq.w + k4.dq.w),
+  ).normalize();
+  const omegaBodyNew = omegaBody.clone()
+    .addScaledVector(k1.dOmega, dt / 6)
+    .addScaledVector(k2.dOmega, dt / 3)
+    .addScaledVector(k3.dOmega, dt / 3)
+    .addScaledVector(k4.dOmega, dt / 6);
+  const thetasNew = new Array<number>(n);
+  const thetaDotsNew = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    thetasNew[i] = thetas[i] +
+      (dt / 6) * (k1.dTheta[i] + 2 * k2.dTheta[i] + 2 * k3.dTheta[i] + k4.dTheta[i]);
+    thetaDotsNew[i] = thetaDots[i] +
+      (dt / 6) * (k1.dThetaDot[i] + 2 * k2.dThetaDot[i] + 2 * k3.dThetaDot[i] + k4.dThetaDot[i]);
+  }
+
+  return { qBodyNew, omegaBodyNew, thetasNew, thetaDotsNew };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,25 +890,26 @@ export function integrateBodyRK4(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Compute the total system angular momentum H_total in the world frame.
+ * Total system angular momentum about body reference point B, world frame.
  *
- * The decomposition follows Hughes (1986) *Spacecraft Attitude Dynamics*,
- * Cambridge University Press, Chapter 3:
+ * Exact rigid-multibody decomposition (Hughes 1986, Ch. 3), per panel j:
  *
- *   H_total = I_body · ω_body + Σ_i [ I_panel_i · ω_panel_i ]
+ *   H_j = M_j · ω_p,j + m · r_j × v_j
  *
- * where:
- *   ω_panel_i = ω_body + θ̇_i · â_i   (body velocity + relative hinge rotation)
- *   â_i = hinge axis in world frame
- *   I_panel_i is the panel's full inertia tensor (about its hinge edge),
- *     rotated to the world frame.
+ * with M_j the panel's world-rotated CENTROIDAL tensor, r_j its CM position,
+ * and the panel's angular velocity / CM velocity accumulated down the full
+ * hinge chain (a folded child riding a deploying parent inherits the
+ * parent's hinge rate — a chain, not per-panel-independent, kinematics):
  *
- * All inertia tensors are diagonal in their respective body frames and
- * are rotated to the world frame using the current orientation quaternions.
+ *   ω_p,j = ω + Σ_{a ∈ chain(j)} θ̇_a · ŝ2_a
+ *   v_j   = ω × r_j + Σ_{a ∈ chain(j)} θ̇_a · ŝ2_a × (r_j − r_H,a)
  *
- * @param state  Current spacecraft state (body + panels)
- * @param config Configuration type (determines panel specs)
- * @param params Simulation parameters (masses, dimensions)
+ * PHASE-B FIX: the previous diagnostic applied each panel's HINGE-referenced
+ * tensor to (ω + θ̇·â) with no m·r×v transport term — an O(1) misstatement of
+ * the panel momentum (and it ignored chain riding entirely). This corrected
+ * form is the quantity the coupled EOM conserves exactly for L_B = 0.
+ * Diagnostic ONLY — never fed back into the state.
+ *
  * @returns H_total as a Vector3 in world frame (kg·m²/s)
  */
 export function computeTotalAngularMomentum(
@@ -372,33 +923,35 @@ export function computeTotalAngularMomentum(
     : new Quaternion().setFromEuler(new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'));
   const omegaBody = new Vector3(state.angularVelocity.x, state.angularVelocity.y, state.angularVelocity.z);
 
-  // ── Body contribution: H_body = R_body · I_body_diag · R_body^T · ω_body ──
+  const thetas = state.panels.map(p => (p.stuck ? p.stuckAngle : p.angle));
+  const rates = state.panels.map(p => (p.stuck || p.deployed ? 0 : p.angularVelocity));
+  const geo = computePanelGeometryAtStage(kinematics, qBody, thetas);
+  const m = params.panelMass;
+
+  // ── Body contribution: H_body = R·I_body_diag·Rᵀ·ω ───────────────────────
   const Ib = bodyInertiaDiag(params);
   const omegaBodyLocal = omegaBody.clone().applyQuaternion(qBody.clone().conjugate());
-  const HbodyLocal = applyInertia(Ib, omegaBodyLocal);
-  const Htotal = HbodyLocal.clone().applyQuaternion(qBody.clone());
+  const Htotal = applyInertia(Ib, omegaBodyLocal).applyQuaternion(qBody.clone());
 
-  // ── Panel contributions ────────────────────────────────────────────────────
-  for (let i = 0; i < state.panels.length; i++) {
-    const panel = state.panels[i];
-    const { qMount, aLocal, aBody, Ip } = kinematics[i];
+  // ── Panel contributions (chain kinematics) ─────────────────────────────────
+  for (let j = 0; j < state.panels.length; j++) {
+    const r = geo[j].rCmWorld;
+    const omegaPanel = omegaBody.clone();
+    const vCm = new Vector3().crossVectors(omegaBody, r);
+    // Walk j's hinge chain (self, then parent, …) accumulating hinge rates.
+    let a: number | undefined = j;
+    while (a !== undefined) {
+      const rate: number = rates[a];
+      if (rate !== 0) {
+        omegaPanel.addScaledVector(geo[a].s2World, rate);
+        const arm = r.clone().sub(geo[a].rHingeWorld);
+        vCm.addScaledVector(new Vector3().crossVectors(geo[a].s2World, arm), rate);
+      }
+      a = kinematics[a].spec.parentIndex;
+    }
 
-    const aWorld = aBody.clone().applyQuaternion(qBody.clone());
-
-    const qHinge = new Quaternion().setFromAxisAngle(aLocal, panel.angle);
-    const qPanel = qBody.clone().multiply(qMount.clone()).multiply(qHinge).normalize();
-
-    // Panel angular velocity in world frame: ω_panel = ω_body + θ̇ · â_world
-    const omegaPanel = omegaBody.clone().add(aWorld.clone().multiplyScalar(panel.angularVelocity));
-
-    // Rotate ω to panel body frame, apply diagonal inertia, rotate back
-    const omegaPanelLocal = omegaPanel.clone().applyQuaternion(qPanel.clone().conjugate());
-    const HpanelLocal = applyInertia(Ip, omegaPanelLocal);
-    const HpanelWorld = HpanelLocal.clone().applyQuaternion(qPanel.clone());
-
-    Htotal.x += HpanelWorld.x;
-    Htotal.y += HpanelWorld.y;
-    Htotal.z += HpanelWorld.z;
+    const HspinWorld = applyCentroidTensor(kinematics[j], geo[j], omegaPanel);
+    Htotal.add(HspinWorld).addScaledVector(new Vector3().crossVectors(r, vCm), m);
   }
 
   return Htotal;
@@ -457,8 +1010,13 @@ export function computeSystemCoM(
   offsetMm: number;
   panelCentresWorld: Vector3[];
 } {
+  // Thin consumer of the shared stage-geometry helper — the same kinematic
+  // chain (parent-resolved hinge positions, panelWorldQuaternion composition)
+  // the coupled EOM and the momentum diagnostic use. Child panels' centre
+  // offsets now rotate through the FULL parent chain (previously the child's
+  // own pos was rotated by its local mount⊗hinge only — inconsistent with the
+  // renderer's nested rotating groups for deployed double-long-edge parents).
   const kinematics = getPanelKinematics(config, params);
-  const specs = kinematics.map(k => k.spec);
   const mBody = params.bodyMass;
   const mPanel = params.panelMass;
   const nPanels = state.panels.length;
@@ -471,93 +1029,21 @@ export function computeSystemCoM(
         new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'),
       );
 
-  // Body CoM is at origin in body frame → world position = body translation (none in this sim)
-  // r_body_world = [0,0,0] (spacecraft body centre IS the world origin in this simulation)
-  let comBodyX = 0;
-  let comBodyY = 0;
-  let comBodyZ = 0;
+  const thetas = state.panels.map(p => (p.stuck ? p.stuckAngle : p.angle));
+  const geo = computePanelGeometryAtStage(kinematics, qBody, thetas);
 
+  // Body CoM is at origin in body frame; panels are mass-weighted about it.
+  // r_CoM_body = (m_body · 0 + Σ m_panel · r_panel_body) / M_total
+  const comBody = new Vector3();
   const panelCentresWorld: Vector3[] = [];
-
-  // Build per-panel body-frame hinge positions (needed for hierarchical panels)
-  // panelHingeBody[i] = hinge position of panel i in body frame (live, angle-dependent for children)
-  const panelHingeBody: Vector3[] = new Array(nPanels);
-
+  const qBodyConj = qBody.clone().conjugate();
   for (let i = 0; i < nPanels; i++) {
-    const spec = specs[i];
-    const panel = state.panels[i];
-
-    // ── 1. Mounting rotation quaternion (local → body frame, cached) ─────────
-    const qMount = kinematics[i].qMount.clone();
-
-    // ── 2. Hinge rotation quaternion (1-DOF deployment angle) ────────────────
-    const aLocal = kinematics[i].aLocal;
-    const currentAngle = panel.stuck ? panel.stuckAngle : panel.angle;
-    const qHinge = new Quaternion().setFromAxisAngle(aLocal, currentAngle);
-
-    // ── 3. Combined panel orientation in body frame ──────────────────────────
-    //   q_panel_in_body = q_mount ⊗ q_hinge
-    const qPanelInBody = qMount.clone().multiply(qHinge).normalize();
-
-    // ── 4. Resolve hinge pivot position in body frame ────────────────────────
-    //   Root panel: spec.hinge is directly in body frame
-    //   Child panel: derived from parent panel's live orientation
-    let hingeBodyVec: Vector3;
-
-    if (spec.parentIndex !== undefined && spec.hingeOffset !== undefined) {
-      // Child panel: hinge position = parent hinge + hingeOffset rotated by parent's body-frame quaternion
-      const parentHinge = panelHingeBody[spec.parentIndex];
-      const parentKin = kinematics[spec.parentIndex];
-      const parentPanel = state.panels[spec.parentIndex];
-
-      const parentAngle = parentPanel.stuck ? parentPanel.stuckAngle : parentPanel.angle;
-      const qParentHinge = new Quaternion().setFromAxisAngle(parentKin.aLocal, parentAngle);
-      const qParentInBody = parentKin.qMount.clone().multiply(qParentHinge).normalize();
-
-      const offsetLocal = new Vector3(
-        spec.hingeOffset[0],
-        spec.hingeOffset[1],
-        spec.hingeOffset[2],
-      );
-      const offsetBody = offsetLocal.clone().applyQuaternion(qParentInBody);
-      hingeBodyVec = parentHinge.clone().add(offsetBody);
-    } else {
-      hingeBodyVec = new Vector3(spec.hinge[0], spec.hinge[1], spec.hinge[2]);
-    }
-
-    panelHingeBody[i] = hingeBodyVec;
-
-    // ── 5. Panel centre in body frame ────────────────────────────────────────
-    //   spec.pos is the centre offset in LOCAL frame (before any rotation)
-    //   Rotate by q_panel_in_body to get body-frame offset
-    const posLocal = new Vector3(spec.pos[0], spec.pos[1], spec.pos[2]);
-    const posInBody = posLocal.clone().applyQuaternion(qPanelInBody);
-    const panelCentreBody = hingeBodyVec.clone().add(posInBody);
-
-    // Accumulate mass-weighted CoM in body frame
-    comBodyX += mPanel * panelCentreBody.x;
-    comBodyY += mPanel * panelCentreBody.y;
-    comBodyZ += mPanel * panelCentreBody.z;
-
-    // ── 6. Panel centre in world frame ───────────────────────────────────────
-    //   q_panel_world = q_body ⊗ q_panel_in_body
-    const qPanelWorld = qBody.clone().multiply(qPanelInBody).normalize();
-    const panelCentreWorld = hingeBodyVec
-      .clone()
-      .applyQuaternion(qBody)           // hinge in world
-      .add(posLocal.clone().applyQuaternion(qPanelWorld)); // add rotated offset
-    panelCentresWorld.push(panelCentreWorld);
+    const centreBody = geo[i].rCmWorld.clone().applyQuaternion(qBodyConj);
+    comBody.addScaledVector(centreBody, mPanel / mTotal);
+    panelCentresWorld.push(geo[i].rCmWorld.clone());
   }
 
-  // ── 7. Composite CoM in body frame ─────────────────────────────────────────
-  // r_CoM_body = (m_body · 0 + Σ m_panel · r_panel_body) / M_total
-  // Body contributes 0 because its CoM is the reference origin
-  const comBody = new Vector3(comBodyX / mTotal, comBodyY / mTotal, comBodyZ / mTotal);
-
-  // ── 8. Composite CoM in world frame ────────────────────────────────────────
   const comWorld = comBody.clone().applyQuaternion(qBody);
-
-  // ── 9. Scalar offset from nominal (mm) ─────────────────────────────────────
   const offsetMm = comBody.length() * 1000;
 
   return { comBody, comWorld, offsetMm, panelCentresWorld };
@@ -633,32 +1119,10 @@ export function stepSimulation(
   const specs = kinematics.map(k => k.spec);
 
   // ── Current body state ────────────────────────────────────────────────────
-  const Ib = bodyInertiaDiag(params);
   const qBody = state._bodyQ
     ? new Quaternion(state._bodyQ.x, state._bodyQ.y, state._bodyQ.z, state._bodyQ.w)
     : new Quaternion().setFromEuler(new Euler(state.orientation.x, state.orientation.y, state.orientation.z, 'XYZ'));
   const omegaBody = new Vector3(state.angularVelocity.x, state.angularVelocity.y, state.angularVelocity.z); // world-frame
-
-  // ── Conservation reference: capture H_total before panel updates ──────────
-  // Following Hughes (1986) Ch. 3 and Wie (2008) §8.2:
-  //   H_total = I_body·ω_body + Σ_i [I_panel_i · (ω_body + θ̇_i · â_i)]
-  // We track H₀ so we can enforce conservation after updating panels.
-  const H0 = computeTotalAngularMomentum(state, config, params);
-
-  // ── Phase 1: per-panel hinge dynamics & accumulate body torque ─────────────
-  const bodyTorqueWorld = new Vector3(0, 0, 0);
-
-  interface PanelUpdate {
-    thetaNew: number;
-    omegaRelNew: number;
-    deployedNew: boolean;
-    contactForceNew: number;
-    hingeTorque: number;
-    aBody: Vector3;        // physical hinge axis in body frame (rot-rotated)
-    aLocal: Vector3;       // raw hinge axis in local frame (before rot)
-    qMount: Quaternion;    // mounting rotation quaternion from spec.rot
-  }
-  const updates: PanelUpdate[] = [];
 
   // ── Stage-relative activation clock ────────────────────────────────────────
   // Record the time at which each stage's predecessor stages first complete
@@ -676,297 +1140,252 @@ export function stepSimulation(
     if (previousStagesComplete) stageOpenTimes[stage] = state.time;
   }
 
-  for (let i = 0; i < state.panels.length; i++) {
+  // ── Phase 1: classify panels (no dynamics here — the joint RK4 does those) ─
+  // A panel is ACTIVE when its hinge DOF evolves this step: not stuck, not
+  // latched deployed, its stage has opened, and its start delay has elapsed.
+  // The classification is decided once per outer step and held fixed across
+  // every RK4 stage/substep (panels never transition mid-step).
+  // NOTE: activation is resolved at timestep resolution — delays smaller than
+  // params.timeStep quantise to zero and do not shift the trajectory.
+  const nPanels = state.panels.length;
+  const stopAngles = specs.map(s => s.maxAngle ?? params.hinge.stopAngle);
+  const active: boolean[] = new Array(nPanels);
+  for (let i = 0; i < nPanels; i++) {
     const panel = state.panels[i];
     const spec = specs[i];
-
-    if (panel.stuck) {
-      updates.push({
-        thetaNew: panel.angle, omegaRelNew: 0, deployedNew: panel.deployed,
-        contactForceNew: 0, hingeTorque: 0,
-        aBody: new Vector3(0, 0, 0), aLocal: new Vector3(0, 0, 0), qMount: new Quaternion(),
-      });
-      continue;
-    }
-
-    // Once deployed, hold panel at stop angle — no further hinge dynamics needed
-    if (panel.deployed) {
-      const kin = kinematics[i];
-      updates.push({
-        thetaNew: panel.angle, omegaRelNew: 0, deployedNew: true,
-        contactForceNew: 0, hingeTorque: 0,
-        aBody: kin.aBody, aLocal: kin.aLocal, qMount: kin.qMount,
-      });
-      continue;
-    }
-
-    // Cached step-invariant kinematics (mounting rotation, hinge axes, inertia)
-    const { qMount, aLocal, aBody, Ip } = kinematics[i];
-    const aWorld = aBody.clone().applyQuaternion(qBody.clone());         // physical hinge axis in world frame
-
-    // Panel orientation:  q_panel = q_body ⊗ q_mount ⊗ q_hinge_local(θ)
-    const qHingeLocal = new Quaternion().setFromAxisAngle(aLocal, panel.angle);
-    const qPanel = qBody.clone().multiply(qMount.clone()).multiply(qHingeLocal).normalize();
-
-    const theta = panel.angle;
-    const omegaRel = panel.angularVelocity;
-
-    // ── Stage-aware deployment parameters ────────────────────────────────────
+    if (panel.stuck || panel.deployed) { active[i] = false; continue; }
     const panelStage = spec.stage ?? 1;
-    const panelMaxAngle = spec.maxAngle ?? params.hinge.stopAngle;
     const panelStartDelay = (() => {
       // General per-panel delays — authoritative source, applies to ALL configs.
       const generalDelay = params.hinge.panelStartDelays?.[i];
       if (generalDelay !== undefined) return generalDelay;
-
       // Legacy short-edge-specific delays (retained for backward compatibility).
       if (config === 'short-edge') {
         return params.hinge.shortEdgeStartDelays?.[i] ?? 0;
       }
-
       if (config === 'short-edge-long-edge' && panelStage === 3) {
         const coupledShortEdgeIndex = i - 4;
         if (coupledShortEdgeIndex >= 0 && coupledShortEdgeIndex < 4) {
           return params.hinge.shortEdgeStartDelays?.[coupledShortEdgeIndex] ?? 0;
         }
       }
-
       return 0;
     })();
-    // Stage N panels wait until all earlier stages are fully deployed or stuck
-    // (stage opening time recorded above), then a further per-panel start delay.
-    // NOTE: activation is resolved at timestep resolution — delays smaller than
-    // params.timeStep quantise to zero and do not shift the trajectory.
     const stageOpenTime = stageOpenTimes[panelStage];
+    active[i] =
+      stageOpenTime !== undefined &&
+      (state.time + dt) >= stageOpenTime + panelStartDelay;
+  }
 
-    let thetaNew: number, omegaRelNew: number, deployedNew: boolean;
-    let contactForceNew: number, hingeTorque: number;
+  // Rider resolution: hingeOf[j] = the active panel whose hinge drives j.
+  // An active panel drives itself; a non-active panel rigidly rides its
+  // nearest ACTIVE ancestor (e.g. the folded stage-2 child riding a deploying
+  // stage-1 parent — its mass moves with the parent's hinge, and ignoring
+  // that is an O(1) momentum error); −1 = rigid with the hub.
+  const hingeOf: number[] = new Array(nPanels).fill(-1);
+  for (let i = 0; i < nPanels; i++) {
+    if (active[i]) { hingeOf[i] = i; continue; }
+    let a = specs[i].parentIndex;
+    while (a !== undefined) {
+      if (active[a]) { hingeOf[i] = a; break; }
+      a = specs[a].parentIndex;
+    }
+  }
 
-    if (stageOpenTime === undefined) {
-      // ── Waiting for previous stages — hold perfectly still ─────────────
-      thetaNew = theta;
-      omegaRelNew = 0;
-      deployedNew = false;
-      contactForceNew = 0;
-      hingeTorque = 0;
+  const thetas = state.panels.map(p => (p.stuck ? p.stuckAngle : p.angle));
+  const thetaDots = state.panels.map((p, i) => (active[i] ? p.angularVelocity : 0));
 
-    } else if ((state.time + dt) < stageOpenTime + panelStartDelay) {
-      // ── Delayed activation window — hold panel stowed until its start time ──
-      thetaNew = theta;
-      omegaRelNew = 0;
-      deployedNew = false;
-      contactForceNew = 0;
-      hingeTorque = 0;
+  // ── Phase 2: joint coupled RK4 over the extended state {q, ω, θ_i, θ̇_i} ──
+  // Hub attitude and every active hinge DOF integrate together; each stage
+  // re-solves [D]·ω̇ = v_r and re-evaluates the hinge torque law at that
+  // stage's (θ, θ̇). Substeps keep the stiff stop-contact mode inside RK4's
+  // stability region (count is deterministic from params/config alone).
+  const nSub = computeCoupledSubstepCount(config, params);
+  let qCur = qBody;
+  let wCur = omegaBody;
+  let thCur = thetas;
+  let thdCur = thetaDots;
+  for (let s = 0; s < nSub; s++) {
+    const r = integrateCoupledSystemRK4(
+      qCur, wCur, thCur, thdCur, hingeOf, stopAngles, kinematics, params, dt / nSub,
+    );
+    qCur = r.qBodyNew;
+    wCur = r.omegaBodyNew;
+    thCur = r.thetasNew;
+    thdCur = r.thetaDotsNew;
+  }
+  const qBodyNew: Quaternion = qCur;
+  let omegaBodyNew: Vector3 = wCur;
 
-    } else {
-      // ── Physics-driven hinge (stage-aware) ─────────────────────────────────
-      const h = params.hinge;
-      // Use panel-specific max angle as the target stop angle
-      const stopAngle = panelMaxAngle;
+  // ── Phase 3: constraint events (stowed floor + completion latch) ───────────
+  // Both events change the state discontinuously: a hinge rate is zeroed (a
+  // plastic impact at a physical constraint — the stowed hard stop / the
+  // end-of-travel latch engaging) and the latch may snap the angle through
+  // the small friction dead-band to the stop. The event is resolved by
+  // momentum continuity ACROSS it — the impact impulse is internal, so
+  //   H_pre = I_sc,B(θ⁻)·ω⁻ + Σ K_i(θ⁻)·θ̇_i⁻   equals
+  //   H_post = I_sc,B(θ⁺)·ω⁺ + Σ K_i(θ⁺)·θ̇_i⁺
+  // solved for ω⁺ (covering both the removed hinge-rate momentum and the
+  // inertia change from the ≤2° latch snap). This is constraint-impact
+  // physics local to the event step — NOT a per-step conservation
+  // correction: on steps with no latch/floor event the integrator output is
+  // used untouched.
+  const thetaFinal = thCur.slice();
+  const thetaDotFinal = thdCur.slice();
+  const deployedFinal = state.panels.map(p => p.deployed);
+  let constraintEvent = false;
+  const eventConstrained: boolean[] = new Array(nPanels).fill(false);
+  const h = params.hinge;
 
-      let tau: number;
-      if (h.hingeModel === 'bistable' && h.bistability) {
-        // ── Bistable tape-spring double-well potential ────────────────────────
-        // U(θ) = A·θ²·(θ − θ_max)² − τ_preload·θ
-        // τ(θ) = −dU/dθ = −2A·θ·(θ − θ_max)·(2θ − θ_max) + τ_preload
-        // Ref: Seffen & Pellegrino 1999; Mallikarachchi & Pellegrino 2011
-        const A = h.bistability.bistabilityCoeff;
-        tau = -2 * A * theta * (theta - stopAngle) * (2 * theta - stopAngle) + h.preloadTorque;
-      } else {
-        // ── Linear spring-damper (default) ───────────────────────────────────
-        tau = h.springConstant * (stopAngle - theta) + h.preloadTorque;
-      }
+  for (let i = 0; i < nPanels; i++) {
+    if (!active[i]) continue;
 
-      // ── Split conservative torque from linear (velocity-proportional) damping ──
-      // Conservative part (position-dependent): spring/bistable + preload, plus the
-      // stop's elastic term. Linear damping (hinge + stop) is folded into c_total and
-      // applied implicitly below. Coulomb friction keeps the old-ω sign (semi-implicit).
-      let tauCons = tau;                    // base spring/bistable + preload (from above)
-      let cTotal = h.dampingCoeff;          // viscous hinge damping coefficient
-      let penetration = 0;
-      if (theta >= stopAngle) {
-        penetration = theta - stopAngle;
-        tauCons -= h.stopStiffness * penetration;   // elastic mechanical stop
-        cTotal += h.stopDamping;                    // stop damping (linear in ω)
-      }
-      const friction = Math.sign(omegaRel) * h.frictionCoeff;
+    // Stowed hard-stop floor: never rotate below θ = 0.
+    if (thetaFinal[i] < 0) {
+      constraintEvent = true;
+      eventConstrained[i] = true;
+      thetaFinal[i] = 0;
+      thetaDotFinal[i] = 0;
+    }
 
-      // Effective inverse inertia about the hinge axis:  κ = â · I_world⁻¹ · â
-      const kappa = applyInverseInertia(Ip, qPanel, aWorld).dot(aWorld);
+    // ── Completion latch ────────────────────────────────────────────────────
+    // Latch "deployed" once the panel is effectively at rest close to the
+    // stop, then hold it there — a real end-of-travel latch engaging. The
+    // tolerance is the Coulomb-friction dead-band τ_f/k_eff (where the hinge
+    // can stall short of the stop), CAPPED at DEPLOY_LATCH_MAX_DEADBAND_RAD
+    // so a soft-spring hinge that stalls far from the stop is honestly
+    // reported as an incomplete deployment instead of being snapped through
+    // tens of degrees. The calibrated underdamped hinge reaches the stop with
+    // momentum and latches during/after the first stop contact (snap ≈ 0°).
+    const effectiveStiffness = (h.hingeModel === 'bistable' && h.bistability)
+      ? 2 * h.bistability.bistabilityCoeff * stopAngles[i] * stopAngles[i]
+      : h.springConstant;
+    const frictionDeadband = Math.min(
+      effectiveStiffness > 0 ? h.frictionCoeff / effectiveStiffness : 0,
+      DEPLOY_LATCH_MAX_DEADBAND_RAD,
+    );
+    if (
+      thetaFinal[i] >= stopAngles[i] - (frictionDeadband + DEPLOY_LATCH_MARGIN_RAD) &&
+      Math.abs(thetaDotFinal[i]) < 0.1
+    ) {
+      deployedFinal[i] = true;
+      constraintEvent = true;
+      eventConstrained[i] = true;
+      thetaFinal[i] = stopAngles[i];
+      thetaDotFinal[i] = 0;
+    }
+  }
 
-      // Backward-Euler (implicit) treatment of the linear damping term makes the panel
-      // integration unconditionally stable — removing the explicit dt·(c/I) < 2 limit
-      // that caused overdamped hinges to overshoot/limit-cycle instead of deploying:
-      //   I·θ̈ = τ_cons − c_total·ω − friction
-      //   ω_new = (ω + dt·κ·(τ_cons − friction)) / (1 + dt·κ·c_total)
-      omegaRelNew = (omegaRel + dt * kappa * (tauCons - friction)) / (1 + dt * kappa * cTotal);
-      thetaNew = theta + omegaRelNew * dt;
+  // Final geometry at the post-event angles (shared by the event resolution,
+  // telemetry, and panel-state assembly below).
+  const geoFinal = computePanelGeometryAtStage(kinematics, qBodyNew, thetaFinal);
 
-      // Total hinge torque actually applied this step (damping uses the implicit ω_new),
-      // used for the equal-and-opposite body reaction below.
-      hingeTorque = tauCons - cTotal * omegaRelNew - friction;
-
-      // Stop contact force magnitude (elastic + damping parts) for telemetry.
-      const tContact = penetration > 0
-        ? -h.stopStiffness * penetration - h.stopDamping * omegaRelNew
-        : 0;
-      contactForceNew = Math.abs(tContact);
-
-      if (thetaNew < 0) { thetaNew = 0; omegaRelNew = 0; }
-
-      // ── Completion latch ──────────────────────────────────────────────────
-      // Latch "deployed" once the panel is effectively at rest close to the
-      // stop, then hold it there — a real end-of-travel latch engaging.
-      // Detection only — dynamics are unchanged. The tolerance is the
-      // Coulomb-friction dead-band τ_f/k_eff (where the hinge can stall short
-      // of the stop), CAPPED at DEPLOY_LATCH_MAX_DEADBAND_RAD so a soft-spring
-      // hinge that stalls far from the stop is reported as an incomplete
-      // deployment instead of being snapped through tens of degrees.
-      // The calibrated underdamped hinge reaches the stop with momentum and
-      // latches during/after the first stop contact (measured snap ≈ 0°).
-      const effectiveStiffness = (h.hingeModel === 'bistable' && h.bistability)
-        ? 2 * h.bistability.bistabilityCoeff * stopAngle * stopAngle // |dτ/dθ| at the deployed well
-        : h.springConstant;
-      const frictionDeadband = Math.min(
-        effectiveStiffness > 0 ? h.frictionCoeff / effectiveStiffness : 0,
-        DEPLOY_LATCH_MAX_DEADBAND_RAD,
+  if (constraintEvent) {
+    // Generalized perfectly-inelastic constraint projection over the full
+    // active generalized state (ω, θ̇_j). The event applies an impulsive
+    // constraint torque only at the latching/floored hinge(s); every OTHER
+    // generalized momentum is carried across the event:
+    //
+    //   hub:            I_sc,B⁺·ω⁺ + Σ_A K_j⁺·θ̇_j⁺        = H_pre
+    //   hinge j ∈ A:    K_j⁺·ω⁺   + Ieff_j⁺·θ̇_j⁺          = p_j⁻
+    //                   with p_j⁻ = K_j⁻·ω⁻ + Ieff_j⁻·θ̇_j⁻ (conjugate hinge
+    //                   momentum ∂T/∂θ̇_j, unchanged by the impulse)
+    //
+    // where A = assemblies still active after the event. Eliminating θ̇_j⁺
+    // gives the Schur-reduced 3×3 solve
+    //
+    //   [I_sc,B⁺ − Σ_A (K_j⁺⊗K_j⁺)/Ieff_j⁺]·ω⁺ = H_pre − Σ_A K_j⁺·p_j⁻/Ieff_j⁺
+    //
+    // This is exactly q̇⁺ = q̇⁻ − M⁻¹Jᵀ(JM⁻¹Jᵀ)⁻¹J·q̇⁻ for the system mass
+    // matrix M(q) (panel–panel coupling is zero — panels couple only through
+    // the hub) — validated against an independently derived planar reference
+    // in coupledLatch.test.ts. With no other active panel it reduces to the
+    // pure momentum-continuity hub solve. Geometry (the ≤2° latch snap) is
+    // taken at the post-event angles; H_pre at the pre-event angles, so total
+    // angular momentum is carried through the event exactly. This fires ONLY
+    // on latch/floor event steps — never as a per-step correction.
+    const assembly = (geo: PanelStageGeometry[], i: number) => {
+      const members: number[] = [];
+      for (let j = 0; j < nPanels; j++) if (hingeOf[j] === i) members.push(j);
+      const co = computeAssemblyCoefficients(
+        members, kinematics, geo, new Vector3(), 0, params.panelMass, i,
       );
-      deployedNew =
-        thetaNew >= stopAngle - (frictionDeadband + DEPLOY_LATCH_MARGIN_RAD) &&
-        Math.abs(omegaRelNew) < 0.1;
-      if (deployedNew) { thetaNew = stopAngle; omegaRelNew = 0; }
+      return { K: co.K, Ieff: co.Ieff };
+    };
+
+    // H immediately before the event (integrator-output angles/rates):
+    const geoPre = computePanelGeometryAtStage(kinematics, qBodyNew, thCur);
+    const Hpre = mat3MulVec(
+      systemInertiaFromGeometry(kinematics, geoPre, qBodyNew, params), omegaBodyNew,
+    );
+    for (let i = 0; i < nPanels; i++) {
+      if (hingeOf[i] === i && thdCur[i] !== 0) {
+        Hpre.addScaledVector(assembly(geoPre, i).K, thdCur[i]);
+      }
     }
 
-    updates.push({ thetaNew, omegaRelNew, deployedNew, contactForceNew, hingeTorque, aBody, aLocal, qMount });
-
-    // Accumulate equal-and-opposite reaction on body:  τ_body += −τ · â_world
-    bodyTorqueWorld.x -= hingeTorque * aWorld.x;
-    bodyTorqueWorld.y -= hingeTorque * aWorld.y;
-    bodyTorqueWorld.z -= hingeTorque * aWorld.z;
-  }
-
-  // ── Phase 2: body rotational dynamics (RK4 + conservation correction) ─────
-  // Integrate spacecraft body attitude using 4th-order Runge-Kutta.
-  // External torque = summed hinge reaction torques (internal forces only).
-  // Then apply angular-momentum conservation correction as per Hughes (1986) Ch. 3.
-
-  // Step 2a: RK4 integration for body (predictor step)
-  const { qBodyNew: qBodyRK4, omegaBodyNew: omegaBodyRK4 } = integrateBodyRK4(
-    qBody, omegaBody, bodyTorqueWorld, Ib, dt,
-  );
-
-  // Step 2b-2c: Iterative conservation correction
-  // The panel momentum depends on body velocity: H_panel_i = I_i · (ω_body + θ̇_i · â_i)
-  // We need to iterate to solve: ω_body = I_body⁻¹ · (H₀ − H_panels(ω_body))
-  // Start with RK4 prediction and iterate 3 times for convergence.
-
-  let omegaBodyIter = omegaBodyRK4.clone();
-  const MAX_ITERS = 5;
-
-  // Iteration-invariant per-panel quantities: they depend on the RK4-predicted
-  // body attitude and the already-updated hinge angles/rates — NOT on the body
-  // angular-velocity iterate — so compute them once, not once per iteration.
-  // Stuck panels still co-rotate with the body, contributing inertia with zero
-  // relative hinge rate. Same math as before, hoisted for the 1/1200 s hot loop.
-  const corrPanels = state.panels.map((panel, i) => {
-    const kin = kinematics[i];
-    const up = updates[i];
-    const thetaIter = panel.stuck ? panel.stuckAngle : up.thetaNew;
-    const omegaRelIter = panel.stuck ? 0 : up.omegaRelNew;
-
-    // Panel orientation using RK4-predicted body orientation:
-    // q_panel = q_body_RK4 ⊗ q_mount ⊗ q_hinge_local(θ_new)
-    const qHingeNew = new Quaternion().setFromAxisAngle(kin.aLocal, thetaIter);
-    const qPanelNew = qBodyRK4.clone().multiply(kin.qMount.clone()).multiply(qHingeNew).normalize();
-
-    // Hinge axis in world frame (using RK4-predicted body orientation)
-    const aWorldNew = kin.aBody.clone().applyQuaternion(qBodyRK4.clone());
-
-    return { Ip: kin.Ip, qPanelNew, qPanelNewConj: qPanelNew.clone().conjugate(), aWorldNew, omegaRelIter };
-  });
-
-  for (let iter = 0; iter < MAX_ITERS; iter++) {
-    // Compute panel angular momentum contribution using current body velocity estimate
-    const H_panels = new Vector3(0, 0, 0);
-
-    for (const cp of corrPanels) {
-      // Panel angular velocity: ω_panel = ω_body_iter + θ̇_new · â_world
-      const omegaPanelNew = omegaBodyIter.clone().add(cp.aWorldNew.clone().multiplyScalar(cp.omegaRelIter));
-
-      // Rotate ω to panel body frame, apply diagonal inertia, rotate back
-      const omegaPanelLocal = omegaPanelNew.applyQuaternion(cp.qPanelNewConj);
-      const HpanelLocal = applyInertia(cp.Ip, omegaPanelLocal);
-      const HpanelWorld = HpanelLocal.applyQuaternion(cp.qPanelNew);
-
-      H_panels.x += HpanelWorld.x;
-      H_panels.y += HpanelWorld.y;
-      H_panels.z += HpanelWorld.z;
+    // Still-active assemblies: conjugate momenta p_j⁻ and post-event coefficients.
+    const IscFinal = systemInertiaFromGeometry(kinematics, geoFinal, qBodyNew, params);
+    const Meff = mat3Clone(IscFinal);
+    const rhs = Hpre.clone();
+    const post: { i: number; K: Vector3; Ieff: number; pPre: number }[] = [];
+    for (let i = 0; i < nPanels; i++) {
+      if (hingeOf[i] !== i || eventConstrained[i]) continue;
+      const pre = assembly(geoPre, i);
+      const fin = assembly(geoFinal, i);
+      const pPre = pre.K.dot(omegaBodyNew) + pre.Ieff * thdCur[i];
+      post.push({ i, K: fin.K, Ieff: fin.Ieff, pPre });
+      mat3AddOuterInPlace(Meff, fin.K.clone().multiplyScalar(-1 / fin.Ieff), fin.K);
+      rhs.addScaledVector(fin.K, -pPre / fin.Ieff);
     }
 
-    // Enforce conservation — derive body angular velocity
-    // H_body = H_total_initial - H_panels  (for free-float, H_total is conserved)
-    // ω_body_conserved = R_body · I_body_diag^{-1} · R_body^T · H_body
-    const H_body_required = new Vector3(H0.x - H_panels.x, H0.y - H_panels.y, H0.z - H_panels.z);
-
-    // Transform H_body to body frame, divide by principal inertia, transform back
-    const H_body_local = H_body_required.clone().applyQuaternion(qBodyRK4.clone().conjugate());
-    const omegaConserved = new Vector3(H_body_local.x / Ib.x, H_body_local.y / Ib.y, H_body_local.z / Ib.z);
-    omegaBodyIter = omegaConserved.clone().applyQuaternion(qBodyRK4.clone());
-  }
-
-  const omegaConservedWorld = omegaBodyIter;
-
-  // Step 2d: Cross-check RK4 vs conservation — warn if discrepancy > 1%
-  const H0mag = Math.sqrt(H0.x * H0.x + H0.y * H0.y + H0.z * H0.z);
-  const deltaOmega = omegaConservedWorld.clone().sub(omegaBodyRK4);
-  const deltaOmegaMag = Math.sqrt(deltaOmega.x * deltaOmega.x + deltaOmega.y * deltaOmega.y + deltaOmega.z * deltaOmega.z);
-  const omegaRK4Mag = Math.sqrt(omegaBodyRK4.x * omegaBodyRK4.x + omegaBodyRK4.y * omegaBodyRK4.y + omegaBodyRK4.z * omegaBodyRK4.z);
-  const relativeError = omegaRK4Mag > 1e-12 ? deltaOmegaMag / omegaRK4Mag : (H0mag > 1e-12 ? deltaOmegaMag : 0);
-
-  if (relativeError > 0.01 && H0mag > 1e-9) {
-    // Log at debug level — this can happen during high-dynamics phases
-    if (typeof console !== 'undefined' && console.debug) {
-      console.debug(
-        `[momentum] t=${(state.time + dt).toFixed(3)}s: RK4 vs conservation ` +
-        `Δω/ω = ${(relativeError * 100).toFixed(2)}% (> 1% threshold)`,
-      );
+    omegaBodyNew = solve3x3(Meff, rhs);
+    for (const a of post) {
+      thetaDotFinal[a.i] = (a.pPre - a.K.dot(omegaBodyNew)) / a.Ieff;
     }
   }
-
-  // ── Step 2e: Apply conservation-derived ω ────────────────────────────────
-  // Gravity-gradient torque (~1e-6 N·m) is four orders of magnitude smaller than
-  // hinge spring torques (~0.02 N·m) on deployment timescales (Hughes 1986 §3.4);
-  // conservation must hold exactly for internal forces. No blending.
-  const qBodyNew: Quaternion = qBodyRK4;
-  const omegaBodyNew: Vector3 = omegaConservedWorld;
 
   // Approximate angular acceleration from finite difference (for telemetry)
   const alphaWorld = omegaBodyNew.clone().sub(omegaBody).multiplyScalar(1 / dt);
 
-  // ── Phase 3: assemble new panel states with derived quaternions ────────────
+  // ── Phase 4: assemble new panel states ─────────────────────────────────────
   const newPanels: PanelState[] = state.panels.map((panel, i) => {
-    const up = updates[i];
-
     if (panel.stuck) {
-      return { ...panel, hingeTorque: 0, _q: panel._q ?? new Quaternion(), _omega: panel._omega ?? new Vector3(0, 0, 0) };
+      return {
+        ...panel,
+        hingeTorque: 0,
+        _q: geoFinal[i].qPanelWorld,
+        _omega: omegaBodyNew.clone(),
+      };
     }
 
-    // Derive panel quaternion:  q_panel = q_body ⊗ q_mount ⊗ q_hinge_local(θ)
-    const qHingeNew = new Quaternion().setFromAxisAngle(up.aLocal.clone().normalize(), up.thetaNew);
-    const qPanelNew = qBodyNew.clone().multiply(up.qMount.clone()).multiply(qHingeNew).normalize();
+    // Telemetry at the final state: hinge torque and stop-contact magnitude
+    // from the same single torque law the integrator uses (0 when inactive).
+    let hingeTorque = 0;
+    let contactForce = 0;
+    if (active[i] && !deployedFinal[i]) {
+      const t = hingeTorqueTotal(thetaFinal[i], thetaDotFinal[i], stopAngles[i], h);
+      hingeTorque = t.tau;
+      contactForce = t.contact;
+    }
 
-    // Panel world-frame angular velocity:  ω_panel = ω_body + θ̇ · â_world(new)
-    const aWorldNew = up.aBody.clone().applyQuaternion(qBodyNew.clone());
-    const omegaPanelNew = omegaBodyNew.clone().add(aWorldNew.clone().multiplyScalar(up.omegaRelNew));
+    // Panel world angular velocity via the hinge chain (a rider inherits its
+    // driving parent's rate; matches the momentum diagnostic's kinematics).
+    const omegaPanelNew = omegaBodyNew.clone();
+    let a: number | undefined = i;
+    while (a !== undefined) {
+      if (thetaDotFinal[a] !== 0) omegaPanelNew.addScaledVector(geoFinal[a].s2World, thetaDotFinal[a]);
+      a = specs[a].parentIndex;
+    }
 
     return {
       ...panel,
-      angle: up.thetaNew,
-      angularVelocity: up.omegaRelNew,
-      deployed: up.deployedNew,
-      contactForce: up.contactForceNew,
-      hingeTorque: up.hingeTorque,
-      _q: qPanelNew,
+      angle: thetaFinal[i],
+      angularVelocity: thetaDotFinal[i],
+      deployed: deployedFinal[i],
+      contactForce,
+      hingeTorque,
+      _q: geoFinal[i].qPanelWorld,
       _omega: omegaPanelNew,
     };
   });
