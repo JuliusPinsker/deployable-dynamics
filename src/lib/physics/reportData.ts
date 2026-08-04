@@ -11,6 +11,7 @@ import {
 import {
   runFullSimulation,
   accumulateOmegaPeak,
+  computeAverageRequiredDetumblingTorque,
   EMPTY_OMEGA_PEAK,
   type SimulationFrame,
 } from './engine';
@@ -35,13 +36,48 @@ const REPORT_CONFIGS: SimulationConfig[] = [
 ];
 
 const REPORT_FAILURES: FailureMode[] = [
-  'none',
   'one-stuck',
+  'two-adjacent',
   'two-opposite',
   'all-stuck',
 ];
 
 const REPORT_MATERIALS: PanelMaterial[] = ['fr4', 'al-kapton', 'cfrp'];
+
+/**
+ * The report evaluates a 42-scenario failure-mode sweep across four panel configurations
+ * and three material presets. The number of valid failure cases depends on the number and
+ * arrangement of panels in each configuration. The long-edge configuration contains two
+ * panels; therefore, it has no separate adjacent-pair and opposite-pair failure cases — the
+ * only panel pair that exists ([0,1]) is inherently the opposite pair, so `two-adjacent` and
+ * `two-opposite` are never generated for it. (2 modes × 3 materials) + (4 modes × 3 configs
+ * × 3 materials) = 6 + 36 = 42 rows.
+ */
+export const CONFIG_FAILURE_MODES: Record<SimulationConfig, FailureMode[]> = {
+  'long-edge': ['one-stuck', 'all-stuck'],
+  'double-long-edge': ['one-stuck', 'two-adjacent', 'two-opposite', 'all-stuck'],
+  'short-edge': ['one-stuck', 'two-adjacent', 'two-opposite', 'all-stuck'],
+  'short-edge-long-edge': ['one-stuck', 'two-adjacent', 'two-opposite', 'all-stuck'],
+};
+
+/**
+ * For configurations with multiple geometrically non-equivalent panel locations, each
+ * one-panel-stuck and two-panel-stuck mode represents a defined canonical panel selection.
+ * In the coupled configuration, the two-panel failure cases are applied to the unchanged
+ * long-edge sub-chain, panels 0-3. The short-edge subassembly is included in the
+ * all-panels-stuck case. (Not present for `long-edge` — see CONFIG_FAILURE_MODES above.)
+ */
+export const TWO_PANEL_TOPOLOGY: Partial<Record<SimulationConfig, { adjacent: number[]; opposite: number[] }>> = {
+  // double-long-edge: panel 0 (+Y stage-1 root) and panel 1 (-Y stage-1 root) are the
+  // mirrored ±Y pair — opposite. Panel 2 is panel 0's folded stage-2 child, same +Y side — adjacent.
+  'double-long-edge': { opposite: [0, 1], adjacent: [0, 2] },
+  // short-edge: panels 0/1 (SE_Top_PosY/SE_Top_NegY) share the top deck — adjacent.
+  // Panels 0/2 (SE_Top_PosY/SE_Bot_PosY) share the +Y edge across top/bottom decks — opposite.
+  'short-edge': { opposite: [0, 2], adjacent: [0, 1] },
+  // short-edge-long-edge (coupled): panels 0-3 are the unchanged double-long-edge chain
+  // (see panelLayouts.ts) — reuse that config's own derived pair rather than a new one.
+  'short-edge-long-edge': { opposite: [0, 1], adjacent: [0, 2] },
+};
 
 export interface ReportRow {
   id: string;
@@ -51,24 +87,36 @@ export interface ReportRow {
   panelMass: number;
   finalAngleDeg: number;
   finalOmegaDegPerS: number;
-  eDetumbleMJ: number;
+  /**
+   * The one reported detumbling figure (N·m): the trajectory-maximum internal body
+   * angular momentum divided by the assumed 5400 s allocation. An ADCS sizing
+   * requirement, not a simulated actuator torque.
+   */
+  averageRequiredDetumblingTorqueNm: number;
   deployTimeS: number;
   peakOmegaDegPerS: number;
 }
 
-function resolveStuckPanels(config: SimulationConfig, failureMode: FailureMode): number[] {
+/**
+ * Resolves the canonical stuck-panel indices for a (config, failureMode) pair.
+ *
+ * Invalid-mode guard: `two-adjacent`/`two-opposite` throw for any configuration with no
+ * entry in TWO_PANEL_TOPOLOGY (i.e. `long-edge`) rather than returning an empty array,
+ * `[0,1]`, or any other fallback — there is no physically valid pair to invent. This is a
+ * defensive guard only: `reportCombos` (via CONFIG_FAILURE_MODES) is the mechanism that
+ * actually prevents these invalid combinations from ever being generated.
+ */
+export function resolveReportStuckPanels(config: SimulationConfig, failureMode: FailureMode): number[] {
   const panelCount = CONFIGURATIONS.find(entry => entry.id === config)?.panelCount ?? 0;
 
-  switch (failureMode) {
-    case 'one-stuck':
-      return [0];
-    case 'two-opposite':
-      return config === 'long-edge' || config === 'double-long-edge' ? [0, 1] : [0, 2];
-    case 'all-stuck':
-      return Array.from({ length: panelCount }, (_, index) => index);
-    default:
-      return [];
+  if (failureMode === 'one-stuck') return [0];
+  if (failureMode === 'all-stuck') return Array.from({ length: panelCount }, (_, index) => index);
+
+  const topology = TWO_PANEL_TOPOLOGY[config];
+  if (!topology) {
+    throw new Error(`Failure mode ${failureMode} is not applicable to configuration ${config}.`);
   }
+  return failureMode === 'two-adjacent' ? topology.adjacent : topology.opposite;
 }
 
 function buildParams(panelMass: number): SimulationParams {
@@ -103,7 +151,7 @@ export function runScenarioTrajectory(
   material: PanelMaterial,
 ): { params: SimulationParams; stuckPanels: number[]; trajectory: SimulationFrame[] } {
   const params = buildParams(materialMasses[material]);
-  const stuckPanels = resolveStuckPanels(config, failureMode);
+  const stuckPanels = resolveReportStuckPanels(config, failureMode);
   const trajectory = runFullSimulation(config, params, REPORT_MAX_TIME, stuckPanels);
   return { params, stuckPanels, trajectory };
 }
@@ -122,18 +170,28 @@ export function computeSingleRow(
   const finalAngleRad = lastAngles.length > 0 ? Math.max(...lastAngles) : 0;
   const finalAngleDeg = MathUtils.radToDeg(finalAngleRad);
 
-  // Peak-angular-velocity frame. The LAST frame is a settled/near-zero frame — the body
+  // Peak values over the trajectory. The LAST frame is a settled/near-zero frame — the body
   // starts from rest and momentum is conserved, so ω decays back to ~0 once the panels stop
-  // moving. Reading w_final / E_det from it is misleading. Reduce the full trajectory to the
-  // peak-ω frame via the shared accumulator (same rule live telemetry uses) and use it for
-  // both. (`all-stuck` and symmetric-nominal legitimately keep peak = 0 → w_final = 0, E_det = 0.)
+  // moving. Reading w_final from it is misleading. Reduce the full trajectory via the
+  // shared accumulator (same one live telemetry uses). |ω| and the internal |Iω| are
+  // maximised INDEPENDENTLY: the body inertia is anisotropic and the mass distribution
+  // changes as the panels swing, so the peak-rate frame need not be the peak-momentum frame.
+  // (`all-stuck` and symmetric-nominal legitimately keep both peaks = 0.)
   let peak = EMPTY_OMEGA_PEAK;
   for (const state of trajectory) {
-    peak = accumulateOmegaPeak(peak, state.angularVelocity.length(), state.eDetumble);
+    peak = accumulateOmegaPeak(
+      peak,
+      state.angularVelocity.length(),
+      state.detumbleAngularMomentum,
+    );
   }
   const finalOmegaDegPerS = MathUtils.radToDeg(peak.peakOmegaRad);
-  const eDetumbleMJ = peak.eDetumbleMJ;
   const peakOmegaDegPerS = finalOmegaDegPerS;
+
+  // The reported ADCS sizing value — that independent maximum spread over the assumed
+  // 5400 s (one-orbit) recovery allocation. Never differenced from adjacent samples.
+  const averageRequiredDetumblingTorqueNm =
+    computeAverageRequiredDetumblingTorque(peak.peakDetumbleAngularMomentum);
 
   // Calculated deployment time t₉₀: first recorded frame at/after 90% of the
   // final (deployed) panel angle — the scientific deployment-time metric used
@@ -157,21 +215,21 @@ export function computeSingleRow(
     panelMass,
     finalAngleDeg,
     finalOmegaDegPerS,
-    eDetumbleMJ,
+    averageRequiredDetumblingTorqueNm,
     deployTimeS,
     peakOmegaDegPerS,
   };
 }
 
-// The 48 rows are deterministic (fixed configs × failures × materials, no user
-// inputs), so compute them once per session; filter changes reuse the cache and
-// the physics-driven sweeps (~27 s total at the 1/1200 s timestep) never re-run.
+// The 42 rows are deterministic (fixed per-config failure modes × materials, no user
+// inputs), so compute them once per session; filter changes reuse the cache and the
+// physics-driven sweeps (~24 s total at the 1/1200 s timestep) never re-run.
 let cachedRows: ReportRow[] | null = null;
 
 function reportCombos(): Array<[SimulationConfig, FailureMode, PanelMaterial]> {
   const combos: Array<[SimulationConfig, FailureMode, PanelMaterial]> = [];
   for (const config of REPORT_CONFIGS) {
-    for (const failureMode of REPORT_FAILURES) {
+    for (const failureMode of CONFIG_FAILURE_MODES[config]) {
       for (const material of REPORT_MATERIALS) {
         combos.push([config, failureMode, material]);
       }
@@ -180,7 +238,7 @@ function reportCombos(): Array<[SimulationConfig, FailureMode, PanelMaterial]> {
   return combos;
 }
 
-export function generate48Rows(): ReportRow[] {
+export function generateReportRows(): ReportRow[] {
   if (cachedRows) return cachedRows;
   const rows = reportCombos().map(([config, failureMode, material]) =>
     computeSingleRow(config, failureMode, material),
@@ -191,11 +249,11 @@ export function generate48Rows(): ReportRow[] {
 
 /**
  * Async variant for the browser: computes one scenario per event-loop turn so the
- * page can render progress and stay responsive during the ~27 s full-physics sweep
+ * page can render progress and stay responsive during the ~24 s full-physics sweep
  * (worst single scenario ≈ 1.7 s — the 3-stage coupled config). Same rows, same
- * cache as generate48Rows; identical physics fidelity.
+ * cache as generateReportRows; identical physics fidelity.
  */
-export async function generate48RowsAsync(
+export async function generateReportRowsAsync(
   onProgress?: (done: number, total: number) => void,
 ): Promise<ReportRow[]> {
   if (cachedRows) {
@@ -234,15 +292,16 @@ export function getFilteredRows(
   failures: FailureMode[] | null,
   materials: PanelMaterial[] | null,
 ): ReportRow[] {
-  return filterRows(generate48Rows(), configs, failures, materials);
+  return filterRows(generateReportRows(), configs, failures, materials);
 }
 
 export interface SummaryStats {
   count: number;
   meanFinalAngle: number;
   stdFinalAngle: number;
-  meanEDetumbleMJ: number;
-  stdEDetumbleMJ: number;
+  /** Mean / std of the per-row average required detumbling torque (N·m). */
+  meanAverageRequiredDetumblingTorqueNm: number;
+  stdAverageRequiredDetumblingTorqueNm: number;
   meanDeployTimeS: number;
   stdDeployTimeS: number;
   maxPeakOmegaDegPerS: number;
@@ -260,8 +319,8 @@ export function computeSummaryStats(rows: ReportRow[]): SummaryStats {
       count: 0,
       meanFinalAngle: 0,
       stdFinalAngle: 0,
-      meanEDetumbleMJ: 0,
-      stdEDetumbleMJ: 0,
+      meanAverageRequiredDetumblingTorqueNm: 0,
+      stdAverageRequiredDetumblingTorqueNm: 0,
       meanDeployTimeS: 0,
       stdDeployTimeS: 0,
       maxPeakOmegaDegPerS: 0,
@@ -270,11 +329,13 @@ export function computeSummaryStats(rows: ReportRow[]): SummaryStats {
 
   const count = rows.length;
   const meanFinalAngle = rows.reduce((sum, row) => sum + row.finalAngleDeg, 0) / count;
-  const meanEDetumbleMJ = rows.reduce((sum, row) => sum + row.eDetumbleMJ, 0) / count;
   const meanDeployTimeS = rows.reduce((sum, row) => sum + row.deployTimeS, 0) / count;
 
+  const meanAverageRequiredDetumblingTorqueNm =
+    rows.reduce((sum, row) => sum + row.averageRequiredDetumblingTorqueNm, 0) / count;
+
   const angles = rows.map(row => row.finalAngleDeg);
-  const eDetumbles = rows.map(row => row.eDetumbleMJ);
+  const requiredTorques = rows.map(row => row.averageRequiredDetumblingTorqueNm);
   const deployTimes = rows.map(row => row.deployTimeS);
   const peakOmegas = rows.map(row => row.peakOmegaDegPerS);
 
@@ -282,8 +343,11 @@ export function computeSummaryStats(rows: ReportRow[]): SummaryStats {
     count,
     meanFinalAngle,
     stdFinalAngle: std(angles, meanFinalAngle),
-    meanEDetumbleMJ,
-    stdEDetumbleMJ: std(eDetumbles, meanEDetumbleMJ),
+    meanAverageRequiredDetumblingTorqueNm,
+    stdAverageRequiredDetumblingTorqueNm: std(
+      requiredTorques,
+      meanAverageRequiredDetumblingTorqueNm,
+    ),
     meanDeployTimeS,
     stdDeployTimeS: std(deployTimes, meanDeployTimeS),
     maxPeakOmegaDegPerS: Math.max(...peakOmegas),

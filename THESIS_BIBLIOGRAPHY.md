@@ -286,22 +286,40 @@ This section compiles all features and their scientific foundations that make up
   τ_bias = τ_gg(r_c_offset)  [if CoM not at nominal position]
   ```
 
-### 3.4 Detumbling Energy Field Telemetry
+### 3.4 Detumbling Requirement Telemetry (Angular Momentum and Average Torque)
 
-**Feature:** Add detumbling energy field (E_detumble) to SimulationFrame and display in telemetry overlay
-- **Code:** `src/lib/physics/engine.ts`, `src/pages/SimulationPage.tsx`
+**Feature:** Report the actuator-independent detumbling requirement — the body angular momentum
+to remove — in `SimulationFrame`, the telemetry overlay, the comparison charts and the report,
+plus the derived average ADCS sizing torque.
+- **Code:** `src/lib/physics/engine.ts`, `src/lib/physics/reportData.ts`,
+  `src/components/TelemetryOverlay.tsx`, `src/pages/ComparePage.tsx`, `src/pages/ReportPage.tsx`
 
 - **References:**
-  - WERTZ, James R. (1978) — §7.4: B-dot control law energy dissipation
-    - **Energy dissipation rate:** dE/dt = −K·(dB/dt)²
-  - SIDI, Marcel J. (1997) — Chapter 7: Energy considerations in attitude control
+  - HUGHES, Peter C. (1986) — Chapter 4: angular momentum of a rigid body
+  - SCHAUB, Hanspeter and JUNKINS, John L. Analytical Mechanics of Aerospace Systems.
+    Reston, VA: AIAA Education Series.
+    - **Citation:** (Schaub and Junkins)
+    - **§4.1.3, Eq. (4.28):** Euler's rotational equation, with the body-frame form in Eq. (4.32)
 
-- **Energy Balance:**
+- **Primary metric — body angular momentum to remove (N·m·s):**
   ```
-  E_kinetic = (1/2)I_body·ω·ω + Σ(1/2)I_panel·ω_panel·ω_panel
-  E_dissipated = ∫ P_mag dt  [magnetic damping power]
-  E_detumble = E_initial − E_current  [energy removed from system]
+  H_remove(t)  = |I_body · ω_body(t)|
+  H_remove,max = max_t H_remove(t)     [per scenario, trajectory maximum]
   ```
+  `I_body` is the diagonal hub inertia (panels excluded), so this is the body value, not the
+  total spacecraft angular momentum. It is what the ADCS must remove to reach zero body rate:
+  actuator-independent, and neither an energy nor a torque.
+
+- **Derived metric — average required detumbling torque (N·m):**
+  ```
+  tau_avg,req = H_remove,max / T_REQ,   T_REQ = 5400 s
+  ```
+  Integrating Ḣ = τ (Eq. 4.28) over the recovery interval gives ΔH = ∫τ dt, so the mean torque
+  is the momentum to remove divided by the chosen duration. T_REQ = 5400 s is an **assumed**
+  one-orbit LEO detumbling allocation — a mission-design input, not a simulation output. The
+  value is an average sizing requirement, not a simulated actuator torque; no peak torque is
+  derived by differencing adjacent simulation samples, since those reflect deployment and latch
+  dynamics rather than an ADCS detumbling requirement.
 
 ### 3.5 Timing Discrepancy Characterization
 
@@ -347,11 +365,24 @@ This section compiles all features and their scientific foundations that make up
   2. **Initial Conditions:** ω₀, deployment rates, panel masses
   3. **Environmental Torques:** Gravity gradient, SRP magnitudes
   4. **Deployment Dynamics:** Panel angular velocities, spring torques
-  5. **Detumbling Performance:** 
-     - Energy dissipation rate (Wertz, 1978)
-     - Control law gain effectiveness (Sidi, 1997)
-     - Final spin rate achieved
-  6. **Failure Analysis:** Stuck panel scenarios and their impact
+  5. **Detumbling Performance:**
+     - Body angular momentum to remove, H_remove,max (Hughes, 1986)
+     - Average required detumbling torque over the assumed 5400 s allocation
+       (Schaub and Junkins, §4.1.3)
+     - Peak spin rate reached
+  6. **Failure Analysis:** Stuck panel scenarios and their impact — the report evaluates a
+     42-scenario failure-mode sweep across four panel configurations and three material
+     presets (`one-stuck`, `two-adjacent-stuck`, `two-opposite-stuck`, `all-stuck`). The
+     number of valid failure cases depends on the number and arrangement of panels in each
+     configuration: the long-edge configuration contains two panels, so it has no separate
+     adjacent-pair and opposite-pair failure cases and generates only `one-stuck`/`all-stuck`.
+     For configurations with multiple geometrically non-equivalent panel locations, each
+     one-panel-stuck and two-panel-stuck mode represents a defined canonical panel selection;
+     in the coupled configuration, the two-panel failure cases are applied to the unchanged
+     long-edge sub-chain (panels 0-3), and the short-edge subassembly is included in the
+     all-panels-stuck case. Nominal deployment is not a failure mode — it remains available
+     as an interactive baseline on the Simulation and Compare pages, outside this
+     failure-only report matrix.
 
 - **References Supporting Report Content:**
   - HUGHES, Peter C. (1986) — Complete orbital mechanics framework
@@ -539,6 +570,7 @@ THORNTON, W. H.; KIM, H. "Flexible appendage dynamics". AIAA Journal of Guidance
 | Gravity gradient | Hughes (1986) | Sidi (1997), Wertz & Larson (1999) | `orbitalTorques.ts` |
 | SRP torque | Wertz (1978) | — | `orbitalTorques.ts` |
 | B-dot detumbling | Wertz (1978) | Sidi (1997) | `detumbling.ts` |
+| Detumbling requirement (H, tau_avg,req) | Schaub and Junkins (§4.1.3) | Hughes (1986) | `engine.ts`, `reportData.ts` |
 | Modal dynamics | Craig & Bampton (1968) | Thornton & Kim (1993), Banerjee & Williams (1992) | `flexModel.ts` |
 | Thermal stiffness | Gilmore (2002) | Wertz & Larson (1999), ESA (2011) | `thermalModel.ts` |
 | Bistable hinges | Seffen & Pellegrino (1999) | Mallikarachchi & Pellegrino (2011) | `bistableHinge.test.ts` |

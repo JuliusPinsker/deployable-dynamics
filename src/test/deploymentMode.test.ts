@@ -64,32 +64,44 @@ describe('physics-driven deployment is the default and only mode', () => {
 
 describe('scientific report path is physics-driven only', () => {
   it('report scenario params contain no prescribed-motion field and use DEFAULT hinge dynamics', () => {
-    const { params } = runScenarioTrajectory('long-edge', 'none', 'fr4');
+    // failureMode only affects which panels are stuck, never `params` itself — any
+    // valid long-edge mode exercises the same params-construction path.
+    const { params } = runScenarioTrajectory('long-edge', 'one-stuck', 'fr4');
     expect('deployDuration' in params.hinge).toBe(false);
     expect(params.hinge.springConstant).toBe(DEFAULT_PARAMS.hinge.springConstant);
     expect(params.hinge.dampingCoeff).toBe(DEFAULT_PARAMS.hinge.dampingCoeff);
   });
 
   it('report trajectories evolve on the dynamics timescale, not a prescribed profile', () => {
-    const { trajectory } = runScenarioTrajectory('long-edge', 'none', 'fr4');
+    // one-stuck holds panel 0; panel 1 is the free panel actually deploying under
+    // real hinge dynamics (every valid long-edge Report mode holds panel 0 — there
+    // is no longer a "nothing stuck" mode to observe panel 0 deploying through).
+    const { trajectory } = runScenarioTrajectory('long-edge', 'one-stuck', 'fr4');
     const at04 = trajectory.find(f => f.time >= 0.4)!;
     // A prescribed ease-out (0.4 s or 2 s variants) would be ≥ 50% deployed here;
     // the physics hinge has covered only a small fraction of travel.
-    expect(at04.panelAngles[0]).toBeLessThan(0.5 * DEFAULT_PARAMS.hinge.stopAngle);
+    expect(at04.panelAngles[1]).toBeLessThan(0.5 * DEFAULT_PARAMS.hinge.stopAngle);
     // The run still completes: the friction-dead-band latch holds the stop exactly.
-    expect(trajectory.at(-1)!.panelAngles[0]).toBeCloseTo(DEFAULT_PARAMS.hinge.stopAngle, 9);
+    expect(trajectory.at(-1)!.panelAngles[1]).toBeCloseTo(DEFAULT_PARAMS.hinge.stopAngle, 9);
+    // Panel 0 stays held at its stuck angle throughout.
+    expect(trajectory.at(-1)!.panelAngles[0]).toBe(0);
   });
 
   it('report runs apply nonzero hinge torque while panels are active', () => {
-    const { params, stuckPanels } = runScenarioTrajectory('long-edge', 'none', 'fr4');
+    const { params, stuckPanels } = runScenarioTrajectory('long-edge', 'one-stuck', 'fr4');
     let state = createInitialState('long-edge');
     state.deploying = true;
     for (const idx of stuckPanels) state.panels[idx].stuck = true;
     const oneSecond = Math.round(1 / params.timeStep);
     for (let i = 0; i < oneSecond; i++) state = stepSimulation(state, 'long-edge', params);
-    for (const panel of state.panels) {
-      expect(panel.deployed).toBe(false); // still mid-deployment at t = 1 s
-      expect(Math.abs(panel.hingeTorque)).toBeGreaterThan(0);
+    for (let i = 0; i < state.panels.length; i++) {
+      const panel = state.panels[i];
+      if (stuckPanels.includes(i)) {
+        expect(panel.hingeTorque).toBe(0); // held stuck — no torque
+      } else {
+        expect(panel.deployed).toBe(false); // still mid-deployment at t = 1 s
+        expect(Math.abs(panel.hingeTorque)).toBeGreaterThan(0);
+      }
     }
   });
 });
@@ -125,7 +137,7 @@ describe('material panel mass flows dynamically (no hard-coded masses)', () => {
   it('materialMasses is derived from MATERIAL_PRESETS and feeds report params', () => {
     for (const preset of MATERIAL_PRESETS) {
       expect(materialMasses[preset.key]).toBe(preset.panelMass);
-      const { params } = runScenarioTrajectory('long-edge', 'none', preset.key);
+      const { params } = runScenarioTrajectory('long-edge', 'one-stuck', preset.key);
       expect(params.panelMass).toBe(preset.panelMass);
     }
   });
