@@ -81,7 +81,7 @@ function makeFrame(time: number) {
     angularVelocity: { x: 0.05, y: 0.03, z: 0.02 },
     angularAcceleration: { x: 0.02, y: 0.01, z: 0.01 },
     totalContactForce: 4.2,
-    eDetumble: 0.123,
+    detumbleAngularMomentum: 1.23e-3,
   };
 }
 
@@ -123,6 +123,59 @@ describe('ComparePage failure scenario phases', () => {
         expect(call[3]).toEqual([0, 1, 2, 3, 4, 5]);
       }
     });
+  });
+
+  it('charts τ_avg,detumble vs time for all four configurations, defined and annotated', async () => {
+    const { container } = render(
+      <MemoryRouter>
+        <ComparePage />
+      </MemoryRouter>,
+    );
+
+    // The chart, under the exact compact-symbol title, alongside the retained ω chart.
+    await waitFor(() => {
+      expect(screen.getByText('τ_avg,detumble (N·m) vs Time')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Total Angular Velocity (°/s) vs Time')).toBeInTheDocument();
+
+    // One series per configuration — the chart card carries all four in its legend.
+    const chartCard = screen
+      .getByText('τ_avg,detumble (N·m) vs Time')
+      .closest('div.rounded-lg') as HTMLElement;
+    expect(chartCard).not.toBeNull();
+    for (const shortName of ['Long-edge', 'Double Long-edge', 'Short-edge', 'Coupled']) {
+      expect(within(chartCard).getByText(shortName)).toBeInTheDocument();
+    }
+
+    // Symbol definition + formula, stated once on the page.
+    expect(
+      screen.getByText(/τ_avg,detumble denotes the average required detumbling torque/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/τ_avg,detumble = H_remove,max \/ 5,?400 s/),
+    ).toBeInTheDocument();
+
+    // The chart's own explanatory note.
+    expect(
+      screen.getByText(/Each point gives the average torque required to remove the body angular/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/not an instantaneous simulated actuator torque/),
+    ).toBeInTheDocument();
+
+    // Summary-table scalar: fixture H = 1.23e-3 → 1.23e-3 / 5400 = 2.278e-7 N·m per config,
+    // exponential-formatted. Sim data arrives asynchronously (one config per event-loop turn).
+    expect(
+      screen.getByRole('columnheader', { name: 'τ_avg,detumble (N·m)' }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByText('2.278e-7')).toHaveLength(4);
+    });
+
+    const text = container.textContent ?? '';
+    expect(text.match(/average required detumbling torque/gi) ?? []).toHaveLength(1);
+    expect(text).not.toMatch(/N·m·s(?!\/rad)/);
+    expect(text).not.toMatch(/angular momentum to remove|Detumbling Energy|\bmJ\b|peak torque/i);
   });
 
   it('material selector change regenerates all runs with the new panelMass (no stale results)', async () => {
@@ -241,4 +294,5 @@ describe('ComparePage failure scenario phases', () => {
 
     expect(screen.getAllByText('Angular momentum coupling:').length).toBe(4);
   });
+
 });

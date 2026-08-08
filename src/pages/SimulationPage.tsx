@@ -19,7 +19,8 @@ import {
   Vector3,
 } from '@/lib/physics/types';
 import {
-  computeEDetumble,
+  computeAverageRequiredDetumblingTorque,
+  computeDetumbleAngularMomentum,
   computeSystemCoM,
   createInitialState,
   stepSimulation,
@@ -114,9 +115,10 @@ export default function SimulationPage() {
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  // Peak detumbling energy reached during the current run (by peak |ω|, like reportData.ts).
-  // The live/instantaneous E_detumble correctly decays to ~0 during the post-deployment coast;
-  // this holds the peak so the demo panel doesn't look like the value "reset" to zero.
+  // Peak of the internal detumbling intermediate for the current run (same accumulator
+  // reportData.ts uses); the overlay divides it to show the required torque. The live value
+  // decays to ~0 during the post-deployment coast, so holding the peak keeps the demo panel
+  // from looking like the reading "reset" to zero.
   const peakRef = useRef<OmegaPeak>(EMPTY_OMEGA_PEAK);
 
   const configRef = useRef(config);
@@ -145,14 +147,14 @@ export default function SimulationPage() {
     let newState = st;
     for (let i = 0; i < stepsPerFrame; i++) {
       newState = stepSimulation(newState, configRef.current, currentParams);
-      // Track peak detumbling energy across every substep (the peak can fall between frames).
+      // Track the peaks across every substep (a peak can fall between displayed frames).
       const omegaRad = newState.angularVelocity.length();
-      const eInst = computeEDetumble(
+      const hInst = computeDetumbleAngularMomentum(
         newState.angularVelocity,
         newState._bodyQ ?? new Quaternion(),
         currentParams,
       );
-      peakRef.current = accumulateOmegaPeak(peakRef.current, omegaRad, eInst);
+      peakRef.current = accumulateOmegaPeak(peakRef.current, omegaRad, hInst);
     }
     // The composite CoM is a rendering concern (viewer rotates about it) —
     // compute it once per DISPLAYED frame, not per physics substep.
@@ -306,12 +308,16 @@ export default function SimulationPage() {
           />
           <TelemetryOverlay
             state={state}
-            eDetumbleMJ={computeEDetumble(
-              state.angularVelocity,
-              state._bodyQ ?? new Quaternion(),
-              params,
+            detumblingTorqueNm={computeAverageRequiredDetumblingTorque(
+              computeDetumbleAngularMomentum(
+                state.angularVelocity,
+                state._bodyQ ?? new Quaternion(),
+                params,
+              ),
             )}
-            peakEDetumbleMJ={peakRef.current.eDetumbleMJ}
+            peakDetumblingTorqueNm={computeAverageRequiredDetumblingTorque(
+              peakRef.current.peakDetumbleAngularMomentum,
+            )}
             delayMagnitude={delayMagnitude}
             delayUnit={delayUnit}
             materialLabel={`${activeMaterial.label} (${activeMaterial.massGrams} g)`}

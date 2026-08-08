@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
-  computeEDetumble,
+  computeAverageRequiredDetumblingTorque,
+  computeDetumbleAngularMomentum,
   computeTotalAngularMomentum,
+  DETUMBLING_TIME_REQUIREMENT_S,
   computeSystemCoM,
   createInitialState,
   stepSimulation,
@@ -49,10 +51,6 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     // Run full simulation for 5 seconds
     const frames = runFullSimulation(config, FREE_FLOAT_PARAMS, maxTime, []);
 
-    // eDetumble sanity checks (KE >= 0, and zero at rest)
-    expect(frames[0].eDetumble).toBeCloseTo(0, 6);
-    frames.forEach(f => expect(f.eDetumble).toBeGreaterThanOrEqual(0));
-
     // Find the frame closest to t=5s
     const targetTime = 5.0;
     let bestFrame = frames[frames.length - 1];
@@ -94,20 +92,6 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
       // Absolute error: |H_final| < 1e-6 kg·m²/s
       expect(v3Mag(Hfinal)).toBeLessThan(1e-6);
     }
-  });
-
-  it('computeEDetumble returns positive KE for non-zero omega', () => {
-    const omega = new Vector3(0.1, 0, 0);
-    const q = new Quaternion();
-    const result = computeEDetumble(omega, q, DEFAULT_PARAMS);
-
-    expect(result).toBeGreaterThan(0);
-
-    const Ixx = (DEFAULT_PARAMS.bodyMass * (
-      DEFAULT_PARAMS.bodyHeight ** 2 + DEFAULT_PARAMS.bodyDepth ** 2
-    )) / 12;
-    const expected = 0.5 * Ixx * omega.x * omega.x * 1000;
-    expect(result).toBeCloseTo(expected, 6);
   });
 
   it('tracks attitudeCouplingDeg in SimulationFrame', () => {
@@ -179,6 +163,76 @@ describe('angular-momentum-conserving body dynamics (Gap 1)', () => {
     // iterative-correction 2% bound; this exercises the genuine |H₀| > 0
     // relative branch with an off-principal-axis spin).
     expect(dHmag / H0mag).toBeLessThanOrEqual(0.001);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Internal intermediate H = |I ω| (N·m·s). Never displayed on its own — its
+//  trajectory maximum is the sole input to the reported average required torque.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('computeDetumbleAngularMomentum', () => {
+  it('is zero for zero angular velocity', () => {
+    const result = computeDetumbleAngularMomentum(
+      new Vector3(0, 0, 0),
+      new Quaternion(),
+      DEFAULT_PARAMS,
+    );
+    expect(result).toBe(0);
+  });
+
+  it('is non-negative for any angular velocity and across a full simulation', () => {
+    // Direct calls, including all-negative components.
+    for (const omega of [
+      new Vector3(0.1, -0.05, 0.02),
+      new Vector3(-0.3, -0.2, -0.4),
+      new Vector3(0, 0, -1.5),
+    ]) {
+      expect(
+        computeDetumbleAngularMomentum(omega, new Quaternion(), DEFAULT_PARAMS),
+      ).toBeGreaterThanOrEqual(0);
+    }
+
+    // Every frame of a real run.
+    const frames = runFullSimulation('long-edge', FREE_FLOAT_PARAMS, 5, []);
+    frames.forEach(f => expect(f.detumbleAngularMomentum).toBeGreaterThanOrEqual(0));
+  });
+
+  it('equals sqrt((Ixx*wx)^2 + (Iyy*wy)^2 + (Izz*wz)^2) for the diagonal body inertia', () => {
+    const omega = new Vector3(0.1, -0.05, 0.02);
+    const result = computeDetumbleAngularMomentum(omega, new Quaternion(), DEFAULT_PARAMS);
+
+    const { bodyMass: m, bodyWidth: w, bodyHeight: h, bodyDepth: d } = DEFAULT_PARAMS;
+    const Ixx = (m * (h ** 2 + d ** 2)) / 12;
+    const Iyy = (m * (w ** 2 + d ** 2)) / 12;
+    const Izz = (m * (w ** 2 + h ** 2)) / 12;
+
+    const expected = Math.sqrt(
+      (Ixx * omega.x) ** 2 + (Iyy * omega.y) ** 2 + (Izz * omega.z) ** 2,
+    );
+    expect(result).toBeCloseTo(expected, 12);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Derived ADCS sizing value: τ_avg,req = H_remove,max / 5400 s.
+//  An average requirement — never a peak differenced from adjacent samples.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('computeAverageRequiredDetumblingTorque', () => {
+  it('assumes a 5400 s (one-orbit LEO) detumbling allocation', () => {
+    expect(DETUMBLING_TIME_REQUIREMENT_S).toBe(5400);
+  });
+
+  it('is zero for zero angular momentum', () => {
+    expect(computeAverageRequiredDetumblingTorque(0)).toBe(0);
+  });
+
+  it('converts 4.93e-3 N·m·s to ≈ 9.13e-7 N·m', () => {
+    expect(computeAverageRequiredDetumblingTorque(4.93e-3)).toBeCloseTo(9.13e-7, 9);
+  });
+
+  it('is exactly H / T_REQ', () => {
+    const H = 1.234e-3;
+    expect(computeAverageRequiredDetumblingTorque(H)).toBe(H / DETUMBLING_TIME_REQUIREMENT_S);
   });
 });
 

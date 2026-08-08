@@ -14,3 +14,10 @@ export function formatOmegaDegPerSec(rad: number): string {
   const x = Math.abs(deg) < OMEGA_EPS ? 0 : deg;
   return `${x.toFixed(2)}°/s`;
 }
+
+/** Format a torque magnitude (N·m) in scientific notation. Required detumbling
+ *  torques land around 1e-7 N·m, so fixed decimals would round them all to 0. */
+export function formatTorqueNm(value: number, digits = 3): string {
+  if (!Number.isFinite(value)) return '--';
+  return value.toExponential(digits);
+}

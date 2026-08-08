@@ -10,7 +10,14 @@ import {
   type ConfigType,
   type MaterialPresetKey,
 } from '@/lib/physics/types';
-import { runFullSimulation, type SimulationFrame } from '@/lib/physics/engine';
+import {
+  DETUMBLING_TIME_REQUIREMENT_S,
+  frameAverageRequiredDetumblingTorque,
+  peakAverageRequiredDetumblingTorque,
+  runFullSimulation,
+  type SimulationFrame,
+} from '@/lib/physics/engine';
+import { formatTorqueNm } from '@/lib/utils';
 import {
   ChartContainer,
   ChartTooltip,
@@ -215,19 +222,21 @@ export default function ComparePage() {
     return data;
   }, [allSimData]);
 
-  // Detumbling energy over time (mJ)
-  const eDetumbleData = useMemo(() => {
+  // τ_avg,detumble over time (N·m) — each raw frame's H(t) divided by the assumed
+  // allocation. Values are plotted RAW: they sit around 1e-7 N·m, so any fixed-decimal
+  // rounding here would floor the whole series to zero.
+  const detumbleTorqueData = useMemo(() => {
     if (!allSimData) return [];
     const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
     const maxLen = Math.max(...configs.map(c => allSimData[c].length));
-    const data: any[] = [];
+    const data: Record<string, number>[] = [];
     for (let i = 0; i < maxLen; i += 2) {
-      const point: any = {};
+      const point: Record<string, number> = {};
       for (const c of configs) {
         const frame = allSimData[c][i];
         if (frame) {
           point.time = frame.time;
-          point[c] = Number(frame.eDetumble.toFixed(3));
+          point[c] = frameAverageRequiredDetumblingTorque(frame);
         }
       }
       if (point.time !== undefined) data.push(point);
@@ -446,18 +455,38 @@ export default function ComparePage() {
             </CardContent>
           </Card>
 
-          {/* Detumbling energy over time */}
+          {/* τ_avg,detumble over time */}
           <Card className="col-span-1 lg:col-span-2">
             <CardHeader>
-              <CardTitle className="text-sm">Detumbling Energy (mJ) vs Time</CardTitle>
+              <CardTitle className="text-sm">τ_avg,detumble (N·m) vs Time</CardTitle>
             </CardHeader>
             <CardContent>
               <ChartContainer config={chartConfig} className="h-[300px]">
-                <LineChart data={eDetumbleData}>
+                <LineChart data={detumbleTorqueData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="time" tick={{ fontSize: 11 }} label={{ value: 'Time (s)', position: 'insideBottom', offset: -5, style: { fontSize: 11 } }} />
-                  <YAxis tick={{ fontSize: 11 }} label={{ value: 'mJ', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    width={72}
+                    tickFormatter={(v: number) => formatTorqueNm(v, 1)}
+                    label={{ value: 'N·m', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }}
+                  />
+                  <ChartTooltip
+                    content={
+                      <ChartTooltipContent
+                        formatter={(value, name) => (
+                          <div className="flex flex-1 justify-between gap-3 leading-none">
+                            <span className="text-muted-foreground">
+                              {chartConfig[name as keyof typeof chartConfig]?.label ?? name}
+                            </span>
+                            <span className="font-mono font-medium tabular-nums text-foreground">
+                              {formatTorqueNm(Number(value))} N·m
+                            </span>
+                          </div>
+                        )}
+                      />
+                    }
+                  />
                   <Line type="monotone" dataKey="long-edge" stroke={COLORS[0]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
                   <Line type="monotone" dataKey="double-long-edge" stroke={COLORS[1]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
                   <Line type="monotone" dataKey="short-edge" stroke={COLORS[2]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
@@ -472,6 +501,16 @@ export default function ComparePage() {
                   </div>
                 ))}
               </div>
+              <p className="text-[11px] text-muted-foreground mt-3">
+                τ_avg,detumble denotes the average required detumbling torque.
+                τ_avg,detumble = H_remove,max / {DETUMBLING_TIME_REQUIREMENT_S.toLocaleString()} s.
+                Unit: N·m.
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-2">
+                Each point gives the average torque required to remove the body angular momentum
+                present at that time within the assumed 5,400 s detumbling allocation. It is not
+                an instantaneous simulated actuator torque.
+              </p>
             </CardContent>
           </Card>
 
@@ -519,6 +558,13 @@ export default function ComparePage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Summary Metrics</CardTitle>
+              <p className="text-[11px] text-muted-foreground">
+                τ_avg,detumble here is the per-configuration trajectory maximum: the maximum
+                deployment-induced body angular momentum divided by the assumed{' '}
+                {DETUMBLING_TIME_REQUIREMENT_S.toLocaleString()} s one-orbit LEO detumbling
+                allocation. It is an average ADCS sizing requirement, not a simulated actuator
+                torque.
+              </p>
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
@@ -528,6 +574,9 @@ export default function ComparePage() {
                       <th className="text-left py-2 text-muted-foreground font-medium">Config</th>
                       <th className="text-right py-2 text-muted-foreground font-medium">Panels</th>
                       <th className="text-right py-2 text-muted-foreground font-medium">Peak ω (°/s)</th>
+                      <th className="text-right py-2 text-muted-foreground font-medium">
+                        τ_avg,detumble (N·m)
+                      </th>
                       <th className="text-right py-2 text-muted-foreground font-medium">T_settle (s)</th>
                     </tr>
                   </thead>
@@ -539,6 +588,7 @@ export default function ComparePage() {
                         const omega = Math.sqrt(f.angularVelocity.x ** 2 + f.angularVelocity.y ** 2 + f.angularVelocity.z ** 2);
                         peakOmega = Math.max(peakOmega, omega);
                       }
+                      const tauAvgReq = peakAverageRequiredDetumblingTorque(frames);
                       const lastT = frames[frames.length - 1]?.time || 0;
                       return (
                         <tr key={c.id} className="border-b border-border/50">
@@ -548,6 +598,9 @@ export default function ComparePage() {
                           </td>
                           <td className="text-right py-2 font-mono">{c.panelCount}</td>
                           <td className="text-right py-2 font-mono">{((peakOmega * 180) / Math.PI).toFixed(2)}</td>
+                          <td className="text-right py-2 font-mono">
+                            {formatTorqueNm(tauAvgReq)}
+                          </td>
                           <td className="text-right py-2 font-mono">{lastT.toFixed(2)}</td>
                         </tr>
                       );

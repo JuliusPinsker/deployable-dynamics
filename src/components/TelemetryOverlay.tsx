@@ -1,20 +1,16 @@
 import React from 'react';
 import type { SpacecraftState } from '@/lib/physics/types';
-import { formatOmegaDegPerSec } from '@/lib/utils';
+import { formatOmegaDegPerSec, formatTorqueNm } from '@/lib/utils';
 
 interface TelemetryOverlayProps {
   state: SpacecraftState;
-  /** Instantaneous (current-frame) detumbling energy — decays to ~0 as the body settles. */
-  eDetumbleMJ?: number;
-  /** Peak detumbling energy reached so far this run — stays elevated through the coast. */
-  peakEDetumbleMJ?: number;
+  /** Instantaneous (current-frame) τ_avg,detumble (N·m) — decays to ~0 as the body settles. */
+  detumblingTorqueNm?: number;
+  /** Peak τ_avg,detumble reached so far this run (N·m) — stays elevated through the coast. */
+  peakDetumblingTorqueNm?: number;
   delayMagnitude: number;
   delayUnit: 'ns' | 'µs' | 'ms';
   materialLabel: string;
-}
-
-function eDetumbleColorFor(value: number): string {
-  return value > 1 ? '#f97316' : value > 0.1 ? '#eab308' : '#22c55e';
 }
 
 function formatNum(n: number, decimals = 3): string {
@@ -23,8 +19,8 @@ function formatNum(n: number, decimals = 3): string {
 
 export default function TelemetryOverlay({
   state,
-  eDetumbleMJ,
-  peakEDetumbleMJ,
+  detumblingTorqueNm,
+  peakDetumblingTorqueNm,
   delayMagnitude,
   delayUnit,
   materialLabel,
@@ -34,9 +30,8 @@ export default function TelemetryOverlay({
   const deployPct = Math.min(100, (avgAngle / (Math.PI / 2)) * 100);
   // Live value still feeds the peak as a floor (so the reading never lags below the current
   // instantaneous), but is no longer rendered on its own — only the peak is displayed.
-  const eDetumbleValue = eDetumbleMJ ?? 0;
-  const peakValue = Math.max(peakEDetumbleMJ ?? 0, eDetumbleValue);
-  const peakColor = eDetumbleColorFor(peakValue);
+  const liveValue = detumblingTorqueNm ?? 0;
+  const peakValue = Math.max(peakDetumblingTorqueNm ?? 0, liveValue);
   const delayDisplay = delayMagnitude === 0
     ? '0 (ideal sync)'
     : `${delayMagnitude} ${delayUnit}`;
@@ -78,11 +73,11 @@ export default function TelemetryOverlay({
         <span className={maxContact > 10 ? 'text-destructive' : ''}>{formatNum(maxContact, 1)} N</span>
       </div>
 
-      <div className="border-t border-border pt-1 flex justify-between">
-        <span className="text-muted-foreground">E detumble (peak)</span>
-        <span className="font-mono font-semibold" style={{ color: peakColor }}>
-          {peakValue.toFixed(3)} mJ
-        </span>
+      <div className="border-t border-border pt-1">
+        <div className="text-muted-foreground text-[10px] leading-tight">τ_avg,detumble</div>
+        <div className="flex justify-end font-mono font-semibold">
+          {formatTorqueNm(peakValue)} N·m
+        </div>
       </div>
 
       <div className="border-t border-border pt-1 flex justify-between">

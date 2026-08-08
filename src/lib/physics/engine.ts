@@ -96,22 +96,29 @@ function bodyInertiaDiag(params: SimulationParams): Vector3 {
 }
 
 /**
- * Rotational kinetic energy of the spacecraft body (millijoules).
+ * INTERNAL INTERMEDIATE — never displayed on its own.
  *
- * E = 1/2 · (Ixx·ωx² + Iyy·ωy² + Izz·ωz²)
+ * Computes the magnitude of angular momentum that the ADCS must remove to reach zero
+ * body angular velocity. H = Iω. Its trajectory maximum is the sole input to
+ * `computeAverageRequiredDetumblingTorque`, which produces the one detumbling figure
+ * the UI, report and export show. It does not represent electrical energy consumption
+ * or a unique torque; torque depends on the selected detumbling duration and control law.
+ *
+ * I is the diagonal HUB-BODY inertia from bodyInertiaDiag() — panel contributions are
+ * excluded, so this is the body value, not the total spacecraft value.
  *
  * ω must be expressed in the body principal frame.
  * Pass state.angularVelocity (world frame) and state._bodyQ so the
  * function can rotate ω into the body frame internally.
  *
- * Reference: Hughes (1986), Spacecraft Attitude Dynamics, Ch. 4 §4.2.3
+ * Reference: Hughes (1986), Spacecraft Attitude Dynamics, Ch. 4
  *
  * @param omegaWorld  Angular velocity vector in world frame (rad/s)
  * @param bodyQ       Body quaternion (world→body rotation)
  * @param params      SimulationParams — used to call bodyInertiaDiag
- * @returns           Rotational KE in millijoules (mJ)
+ * @returns           |I ω| in N·m·s (= kg·m²/s)
  */
-export function computeEDetumble(
+export function computeDetumbleAngularMomentum(
   omegaWorld: Vector3,
   bodyQ: Quaternion,
   params: SimulationParams,
@@ -120,42 +127,111 @@ export function computeEDetumble(
   const omegaBody = omegaWorld
     .clone()
     .applyQuaternion(bodyQ.clone().conjugate());
-  return (
-    0.5 *
-    (Ib.x * omegaBody.x * omegaBody.x +
-      Ib.y * omegaBody.y * omegaBody.y +
-      Ib.z * omegaBody.z * omegaBody.z) *
-    1000 // J → mJ
-  );
+  const hx = Ib.x * omegaBody.x;
+  const hy = Ib.y * omegaBody.y;
+  const hz = Ib.z * omegaBody.z;
+  return Math.sqrt(hx * hx + hy * hy + hz * hz);
+}
+
+/**
+ * Assumed detumbling allocation (seconds): one LEO orbit ≈ 5400 s.
+ *
+ * This is a mission-design ASSUMPTION used to size the ADCS, not a simulation
+ * output — nothing in the dynamics depends on it.
+ */
+export const DETUMBLING_TIME_REQUIREMENT_S = 5400;
+
+/**
+ * Average torque the ADCS must sustain to remove a given body angular momentum
+ * within DETUMBLING_TIME_REQUIREMENT_S.
+ *
+ *   τ_avg,req = H_remove,max / T_REQ        (T_REQ = 5400 s, one LEO orbit)
+ *
+ * This is the time-averaged form of Euler's rotational equation — Schaub, H. and
+ * Junkins, J. L., Analytical Mechanics of Aerospace Systems, §4.1.3, Eq. (4.28),
+ * with the body-frame form in Eq. (4.28)'s companion Eq. (4.32): integrating
+ * Ḣ = τ over the recovery interval gives ΔH = ∫τ dt, so the mean torque is simply
+ * ΔH divided by the chosen duration.
+ *
+ * It is an average SIZING value, not a simulated actuator torque and not a peak:
+ * the instantaneous torque profile depends on the control law and the actuator,
+ * neither of which is modelled here. Do not derive a peak torque by differencing
+ * adjacent simulation samples — that measures deployment/latch dynamics, not an
+ * ADCS detumbling requirement.
+ *
+ * @param angularMomentumNms  Body angular momentum to remove (N·m·s)
+ * @returns                   Average required detumbling torque (N·m)
+ */
+export function computeAverageRequiredDetumblingTorque(angularMomentumNms: number): number {
+  return angularMomentumNms / DETUMBLING_TIME_REQUIREMENT_S;
+}
+
+/**
+ * τ_avg,detumble at a single recorded frame (N·m) — that frame's internal H divided by
+ * T_REQ. Used for the per-frame comparison series; it is NOT an instantaneous actuator
+ * torque, it is the average torque that would remove the momentum present at that instant.
+ */
+export function frameAverageRequiredDetumblingTorque(frame: SimulationFrame): number {
+  return computeAverageRequiredDetumblingTorque(frame.detumbleAngularMomentum);
+}
+
+/**
+ * τ_avg,detumble for a whole recorded trajectory (N·m): the INDEPENDENT maximum of the
+ * internal H over every frame, divided by T_REQ. Equivalently max over frames of
+ * `frameAverageRequiredDetumblingTorque`, since the division is monotone.
+ *
+ * Exposed so the UI never has to touch the intermediate momentum itself — the pages
+ * display exactly one detumbling number and this produces it.
+ */
+export function peakAverageRequiredDetumblingTorque(frames: SimulationFrame[]): number {
+  let peakH = 0;
+  for (const frame of frames) {
+    peakH = Math.max(peakH, frame.detumbleAngularMomentum);
+  }
+  return computeAverageRequiredDetumblingTorque(peakH);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Peak-by-|ω| tracking (shared by the report sweep and live telemetry)
+//  Peak tracking (shared by the report sweep and live telemetry)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Running peak of body angular-velocity magnitude, plus the detumbling energy at that peak
- * frame. Because the body starts from rest and momentum is conserved, ω decays back to ~0 once
- * panels stop, so a settled/last value is misleading — the meaningful figure is the peak. This
- * is the single selection rule used both by the report sweep (`computeSingleRow`, reducing over
- * a full trajectory) and by live Simulation-page telemetry (folding one frame at a time).
+ * Running peaks of the two reported rotational quantities. Because the body starts from rest
+ * and momentum is conserved, ω decays back to ~0 once panels stop, so a settled/last value is
+ * misleading — the meaningful figure is the peak. This is the single accumulator used both by
+ * the report sweep (`computeSingleRow`, reducing over a full trajectory) and by live
+ * Simulation-page telemetry (folding one frame at a time).
+ *
+ * The two fields are maximised INDEPENDENTLY: the body inertia is anisotropic and the system's
+ * mass distribution changes as the panels swing, so the frame that maximises |ω| need not be
+ * the frame that maximises |Iω|.
  */
 export interface OmegaPeak {
   /** Peak body angular-velocity magnitude seen so far (rad/s). */
   peakOmegaRad: number;
-  /** Detumbling energy (mJ) at that peak-ω frame. */
-  eDetumbleMJ: number;
+  /** Peak body angular momentum to remove seen so far (N·m·s) — tracked INDEPENDENTLY
+   *  of peakOmegaRad, since the two maxima need not occur at the same frame. */
+  peakDetumbleAngularMomentum: number;
 }
 
-export const EMPTY_OMEGA_PEAK: OmegaPeak = { peakOmegaRad: 0, eDetumbleMJ: 0 };
+export const EMPTY_OMEGA_PEAK: OmegaPeak = {
+  peakOmegaRad: 0,
+  peakDetumbleAngularMomentum: 0,
+};
 
-/** Fold one sample into the running peak, selecting by |ω| (ties keep the newer sample). */
+/** Fold one sample into the running peaks — each field is maximised on its own. */
 export function accumulateOmegaPeak(
   prev: OmegaPeak,
   omegaRad: number,
-  eDetumbleMJ: number,
+  detumbleAngularMomentum: number,
 ): OmegaPeak {
-  return omegaRad >= prev.peakOmegaRad ? { peakOmegaRad: omegaRad, eDetumbleMJ } : prev;
+  return {
+    peakOmegaRad: Math.max(prev.peakOmegaRad, omegaRad),
+    peakDetumbleAngularMomentum: Math.max(
+      prev.peakDetumbleAngularMomentum,
+      detumbleAngularMomentum,
+    ),
+  };
 }
 
 /**
@@ -1445,34 +1521,25 @@ export interface SimulationFrame {
    */
   attitudeCouplingDeg?: number;
   /**
-   * Rotational kinetic energy of the spacecraft body at this timestep (mJ).
+   * Body angular momentum that must be removed to reach zero body rate, at this
+   * timestep — the actuator-independent detumbling requirement:
    *
-   * Defined as the scalar rotational KE of the body alone (not panels),
-   * expressed in the body principal frame:
-   *
-   *   E = ½ · (Ixx·ωx² + Iyy·ωy² + Izz·ωz²)
+   *   H = |I ω| = √((Ixx·ωx)² + (Iyy·ωy)² + (Izz·ωz)²)
    *
    * where ω components are the body angular velocity projected onto the
    * principal axes (body frame), and Ixx/Iyy/Izz are the diagonal
-   * principal moments of inertia from bodyInertiaDiag().
+   * principal moments of inertia from bodyInertiaDiag(). Panel contributions
+   * are excluded — this is the body value, not the total spacecraft momentum.
    *
-   * Converted to millijoules (× 1000) for readability in telemetry.
-   *
-   * During free tumble this value is constant (energy conserved).
-   * During panel deployment it changes as angular momentum redistributes
-   * between the body and deploying panels — a decrease indicates energy
-   * being transferred into panel rotational motion (desirable for passive
-   * detumbling via the "scissors" effect).
-   *
-   * In active B-dot detumbling this metric is the primary convergence
-   * indicator — detumbling is complete when E_detumble → 0.
+   * It does not represent electrical energy consumption or a unique torque;
+   * torque depends on the selected detumbling duration and control law.
    *
    * Reference: Hughes, P. C. (1986). Spacecraft Attitude Dynamics.
-   * Wiley, Chapter 4 — rotational kinetic energy of a rigid body.
+   * Wiley, Chapter 4 — angular momentum of a rigid body.
    *
-   * Units: millijoules (mJ)
+   * Units: N·m·s (= kg·m²/s)
    */
-  eDetumble: number;
+  detumbleAngularMomentum: number;
 }
 
 export function runFullSimulation(
@@ -1544,7 +1611,7 @@ export function runFullSimulation(
       const attitudeCouplingRad = 2 * Math.acos(MathUtils.clamp(Math.abs(qRel.w), -1, 1));
       const attitudeCouplingDeg = MathUtils.radToDeg(attitudeCouplingRad);
 
-      const eDetumbleMJ = computeEDetumble(
+      const detumbleAngularMomentum = computeDetumbleAngularMomentum(
         state.angularVelocity,
         state._bodyQ ?? new Quaternion(),
         params,
@@ -1559,9 +1626,10 @@ export function runFullSimulation(
         totalContactForce: state.panels.reduce((s, p) => s + p.contactForce, 0),
         momentumError,
         attitudeCouplingDeg,
-        // 6-decimal (nJ) resolution: physics-driven deployment transients are
-        // ~1e-4 mJ and would underflow the previous 3-decimal rounding to 0.
-        eDetumble: Math.round(eDetumbleMJ * 1e6) / 1e6,
+        // Stored raw: deployment transients sit at ~1e-5 … 1e-2 N·m·s, so any
+        // fixed-decimal quantisation here would visibly step the signal.
+        // Display precision is the formatter's job (formatAngularMomentumNms).
+        detumbleAngularMomentum,
       });
     }
 
