@@ -1,13 +1,17 @@
 import { MathUtils } from 'three';
 import {
-  CONFIGURATIONS,
-  DEFAULT_PARAMS,
-  MATERIAL_PRESETS,
   type ConfigType,
   type FailureModeKey,
   type MaterialPresetKey,
   type SimulationParams,
 } from './types';
+import {
+  buildScenarioParams,
+  materialMasses,
+  CONFIG_FAILURE_MODES,
+  TWO_PANEL_TOPOLOGY,
+  resolveReportStuckPanels,
+} from '@/lib/scenario/scenarioSpec';
 import {
   runFullSimulation,
   accumulateOmegaPeak,
@@ -20,13 +24,10 @@ export type SimulationConfig = ConfigType;
 export type FailureMode = FailureModeKey;
 export type PanelMaterial = MaterialPresetKey;
 
-export const materialMasses: Record<PanelMaterial, number> = MATERIAL_PRESETS.reduce(
-  (acc, preset) => {
-    acc[preset.key] = preset.panelMass;
-    return acc;
-  },
-  {} as Record<PanelMaterial, number>,
-);
+// The scenario vocabulary (per-config valid modes, canonical two-panel topology, stuck-panel
+// resolution, material masses) is owned by scenarioSpec.ts so Simulation and Compare share it.
+// Re-exported here because this module has always been their published home.
+export { materialMasses, CONFIG_FAILURE_MODES, TWO_PANEL_TOPOLOGY, resolveReportStuckPanels };
 
 const REPORT_CONFIGS: SimulationConfig[] = [
   'long-edge',
@@ -44,41 +45,6 @@ const REPORT_FAILURES: FailureMode[] = [
 
 const REPORT_MATERIALS: PanelMaterial[] = ['fr4', 'al-kapton', 'cfrp'];
 
-/**
- * The report evaluates a 42-scenario failure-mode sweep across four panel configurations
- * and three material presets. The number of valid failure cases depends on the number and
- * arrangement of panels in each configuration. The long-edge configuration contains two
- * panels; therefore, it has no separate adjacent-pair and opposite-pair failure cases — the
- * only panel pair that exists ([0,1]) is inherently the opposite pair, so `two-adjacent` and
- * `two-opposite` are never generated for it. (2 modes × 3 materials) + (4 modes × 3 configs
- * × 3 materials) = 6 + 36 = 42 rows.
- */
-export const CONFIG_FAILURE_MODES: Record<SimulationConfig, FailureMode[]> = {
-  'long-edge': ['one-stuck', 'all-stuck'],
-  'double-long-edge': ['one-stuck', 'two-adjacent', 'two-opposite', 'all-stuck'],
-  'short-edge': ['one-stuck', 'two-adjacent', 'two-opposite', 'all-stuck'],
-  'short-edge-long-edge': ['one-stuck', 'two-adjacent', 'two-opposite', 'all-stuck'],
-};
-
-/**
- * For configurations with multiple geometrically non-equivalent panel locations, each
- * one-panel-stuck and two-panel-stuck mode represents a defined canonical panel selection.
- * In the coupled configuration, the two-panel failure cases are applied to the unchanged
- * long-edge sub-chain, panels 0-3. The short-edge subassembly is included in the
- * all-panels-stuck case. (Not present for `long-edge` — see CONFIG_FAILURE_MODES above.)
- */
-export const TWO_PANEL_TOPOLOGY: Partial<Record<SimulationConfig, { adjacent: number[]; opposite: number[] }>> = {
-  // double-long-edge: panel 0 (+Y stage-1 root) and panel 1 (-Y stage-1 root) are the
-  // mirrored ±Y pair — opposite. Panel 2 is panel 0's folded stage-2 child, same +Y side — adjacent.
-  'double-long-edge': { opposite: [0, 1], adjacent: [0, 2] },
-  // short-edge: panels 0/1 (SE_Top_PosY/SE_Top_NegY) share the top deck — adjacent.
-  // Panels 0/2 (SE_Top_PosY/SE_Bot_PosY) share the +Y edge across top/bottom decks — opposite.
-  'short-edge': { opposite: [0, 2], adjacent: [0, 1] },
-  // short-edge-long-edge (coupled): panels 0-3 are the unchanged double-long-edge chain
-  // (see panelLayouts.ts) — reuse that config's own derived pair rather than a new one.
-  'short-edge-long-edge': { opposite: [0, 1], adjacent: [0, 2] },
-};
-
 export interface ReportRow {
   id: string;
   config: SimulationConfig;
@@ -95,39 +61,6 @@ export interface ReportRow {
   averageRequiredDetumblingTorqueNm: number;
   deployTimeS: number;
   peakOmegaDegPerS: number;
-}
-
-/**
- * Resolves the canonical stuck-panel indices for a (config, failureMode) pair.
- *
- * Invalid-mode guard: `two-adjacent`/`two-opposite` throw for any configuration with no
- * entry in TWO_PANEL_TOPOLOGY (i.e. `long-edge`) rather than returning an empty array,
- * `[0,1]`, or any other fallback — there is no physically valid pair to invent. This is a
- * defensive guard only: `reportCombos` (via CONFIG_FAILURE_MODES) is the mechanism that
- * actually prevents these invalid combinations from ever being generated.
- */
-export function resolveReportStuckPanels(config: SimulationConfig, failureMode: FailureMode): number[] {
-  const panelCount = CONFIGURATIONS.find(entry => entry.id === config)?.panelCount ?? 0;
-
-  if (failureMode === 'one-stuck') return [0];
-  if (failureMode === 'all-stuck') return Array.from({ length: panelCount }, (_, index) => index);
-
-  const topology = TWO_PANEL_TOPOLOGY[config];
-  if (!topology) {
-    throw new Error(`Failure mode ${failureMode} is not applicable to configuration ${config}.`);
-  }
-  return failureMode === 'two-adjacent' ? topology.adjacent : topology.opposite;
-}
-
-function buildParams(panelMass: number): SimulationParams {
-  // Physics-driven torsional-hinge dynamics only — the scientific report must
-  // never run a prescribed-motion profile. Material panel mass is the only
-  // per-row override; it flows into panel inertia, momentum, and CoM.
-  return {
-    ...DEFAULT_PARAMS,
-    panelMass,
-    hinge: { ...DEFAULT_PARAMS.hinge },
-  };
 }
 
 /**
@@ -149,8 +82,13 @@ export function runScenarioTrajectory(
   config: SimulationConfig,
   failureMode: FailureMode,
   material: PanelMaterial,
+  delaySeconds: number = 0,
 ): { params: SimulationParams; stuckPanels: number[]; trajectory: SimulationFrame[] } {
-  const params = buildParams(materialMasses[material]);
+  // Physics-driven torsional-hinge dynamics only — the scientific report must never run a
+  // prescribed-motion profile. Material panel mass and the δt-derived sequential release are
+  // the only per-row overrides, and they come from the SAME builder the interactive pages use,
+  // so a given (config, material, δt) means one thing across the whole application.
+  const params = buildScenarioParams({ config, material, delaySeconds });
   const stuckPanels = resolveReportStuckPanels(config, failureMode);
   const trajectory = runFullSimulation(config, params, REPORT_MAX_TIME, stuckPanels);
   return { params, stuckPanels, trajectory };
@@ -160,9 +98,10 @@ export function computeSingleRow(
   config: SimulationConfig,
   failureMode: FailureMode,
   material: PanelMaterial,
+  delaySeconds: number = 0,
 ): ReportRow {
   const panelMass = materialMasses[material];
-  const { trajectory } = runScenarioTrajectory(config, failureMode, material);
+  const { trajectory } = runScenarioTrajectory(config, failureMode, material, delaySeconds);
   const lastState = trajectory.at(-1);
 
   // Final panel angle comes from the last frame — panels are held at their final angles.
@@ -221,10 +160,11 @@ export function computeSingleRow(
   };
 }
 
-// The 42 rows are deterministic (fixed per-config failure modes × materials, no user
-// inputs), so compute them once per session; filter changes reuse the cache and the
-// physics-driven sweeps (~24 s total at the 1/1200 s timestep) never re-run.
-let cachedRows: ReportRow[] | null = null;
+// The 42 rows are deterministic in (config × failure mode × material × δt), so they are cached
+// KEYED BY δt: filter changes reuse the cache and never re-run the physics-driven sweeps (~24 s
+// total at the 1/1200 s timestep), while a different timing discrepancy computes its own set
+// rather than serving another δt's numbers.
+const rowCache = new Map<number, ReportRow[]>();
 
 function reportCombos(): Array<[SimulationConfig, FailureMode, PanelMaterial]> {
   const combos: Array<[SimulationConfig, FailureMode, PanelMaterial]> = [];
@@ -238,13 +178,15 @@ function reportCombos(): Array<[SimulationConfig, FailureMode, PanelMaterial]> {
   return combos;
 }
 
-export function generateReportRows(): ReportRow[] {
-  if (cachedRows) return cachedRows;
+export function generateReportRows(delaySeconds: number = 0): ReportRow[] {
+  const cached = rowCache.get(delaySeconds);
+  if (cached) return cached;
   const rows = reportCombos().map(([config, failureMode, material]) =>
-    computeSingleRow(config, failureMode, material),
+    computeSingleRow(config, failureMode, material, delaySeconds),
   );
-  cachedRows = rows.sort((a, b) => a.id.localeCompare(b.id));
-  return cachedRows;
+  rows.sort((a, b) => a.id.localeCompare(b.id));
+  rowCache.set(delaySeconds, rows);
+  return rows;
 }
 
 /**
@@ -255,22 +197,25 @@ export function generateReportRows(): ReportRow[] {
  */
 export async function generateReportRowsAsync(
   onProgress?: (done: number, total: number) => void,
+  delaySeconds: number = 0,
 ): Promise<ReportRow[]> {
-  if (cachedRows) {
-    onProgress?.(cachedRows.length, cachedRows.length);
-    return cachedRows;
+  const cached = rowCache.get(delaySeconds);
+  if (cached) {
+    onProgress?.(cached.length, cached.length);
+    return cached;
   }
   const combos = reportCombos();
   const rows: ReportRow[] = [];
   for (let i = 0; i < combos.length; i++) {
     const [config, failureMode, material] = combos[i];
-    rows.push(computeSingleRow(config, failureMode, material));
+    rows.push(computeSingleRow(config, failureMode, material, delaySeconds));
     onProgress?.(i + 1, combos.length);
     // Yield to the event loop between scenarios so rendering/input stay live.
     await new Promise(resolve => setTimeout(resolve, 0));
   }
-  cachedRows = rows.sort((a, b) => a.id.localeCompare(b.id));
-  return cachedRows;
+  rows.sort((a, b) => a.id.localeCompare(b.id));
+  rowCache.set(delaySeconds, rows);
+  return rows;
 }
 
 /** Pure filter over already-generated rows (no simulation work). */
@@ -291,8 +236,9 @@ export function getFilteredRows(
   configs: SimulationConfig[] | null,
   failures: FailureMode[] | null,
   materials: PanelMaterial[] | null,
+  delaySeconds: number = 0,
 ): ReportRow[] {
-  return filterRows(generateReportRows(), configs, failures, materials);
+  return filterRows(generateReportRows(delaySeconds), configs, failures, materials);
 }
 
 export interface SummaryStats {

@@ -58,17 +58,19 @@ test('Report: all three materials present with correct masses', async ({ page })
   test.setTimeout(180_000);
   await page.goto('/report');
 
-  // Async physics sweep with progress, then 48 rows.
+  // Async physics sweep with progress, then the 42-scenario matrix: long-edge has only two
+  // panels, so it contributes no adjacent/opposite pair rows — (2 modes × 3 materials) +
+  // (4 modes × 3 configs × 3 materials) = 42, i.e. 14 rows per material.
   await expect(page.getByText(/Running physics-driven scenario sweep/)).toBeVisible();
-  await expect(page.getByTestId('report-row')).toHaveCount(48, { timeout: 150_000 });
+  await expect(page.getByTestId('report-row')).toHaveCount(42, { timeout: 150_000 });
 
   const rows = page.getByTestId('report-row');
   await expect(rows.filter({ hasText: 'FR4' }).first()).toContainText('0.032');
   await expect(rows.filter({ hasText: 'Al/Kapton' }).first()).toContainText('0.050');
   await expect(rows.filter({ hasText: 'CFRP' }).first()).toContainText('0.020');
-  expect(await rows.filter({ hasText: 'FR4' }).count()).toBe(16);
-  expect(await rows.filter({ hasText: 'Al/Kapton' }).count()).toBe(16);
-  expect(await rows.filter({ hasText: 'CFRP' }).count()).toBe(16);
+  expect(await rows.filter({ hasText: 'FR4' }).count()).toBe(14);
+  expect(await rows.filter({ hasText: 'Al/Kapton' }).count()).toBe(14);
+  expect(await rows.filter({ hasText: 'CFRP' }).count()).toBe(14);
 });
 
 test('Compare: staggered δt produces a distinct result; 5 ms preset regenerates', async ({ page }) => {

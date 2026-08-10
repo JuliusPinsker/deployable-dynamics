@@ -1,5 +1,4 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { useLocation, useSearchParams } from 'react-router-dom';
 import CubeSatViewer from '@/components/CubeSatViewer';
 import TelemetryOverlay from '@/components/TelemetryOverlay';
 import { Button } from '@/components/ui/button';
@@ -9,7 +8,6 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   CONFIGURATIONS,
-  DEFAULT_PARAMS,
   MATERIAL_PRESETS,
   type ConfigType,
   type MaterialPresetKey,
@@ -29,12 +27,40 @@ import {
   type OmegaPeak,
 } from '@/lib/physics/engine';
 import { Play, RotateCcw, Pause, AlertTriangle } from 'lucide-react';
-import ThemeToggle from '@/components/ui/theme-toggle';
+import SiteHeader from '@/components/SiteHeader';
+import DelayInput from '@/components/DelayInput';
+import { useScenario } from '@/hooks/useScenario';
+import {
+  FAILURE_MODE_LABELS,
+  buildScenarioParams,
+  resolveStuckPanels,
+  validFailureModes,
+  type ScenarioFailureMode,
+} from '@/lib/scenario/scenarioSpec';
+import { deriveDelayDisplay } from '@/lib/scenario/delay';
 
-const UNIT_TO_SECONDS: Record<'ns' | 'µs' | 'ms', number> = {
-  ns: 1e-9,
-  µs: 1e-6,
-  ms: 1e-3,
+// Per-mode banner accent, keyed by the shared failure-mode vocabulary.
+const FAILURE_BANNER_TONE: Record<Exclude<ScenarioFailureMode, 'nominal'>, string> = {
+  'one-stuck': 'bg-amber-500/20 border-amber-500/40 text-amber-400',
+  'two-opposite': 'bg-amber-500/20 border-amber-500/40 text-amber-400',
+  'two-adjacent': 'bg-orange-500/20 border-orange-500/40 text-orange-400',
+  'all-stuck': 'bg-red-500/20 border-red-500/40 text-red-400',
+};
+
+const FAILURE_BANNER_TEXT: Record<Exclude<ScenarioFailureMode, 'nominal'>, string> = {
+  'one-stuck': '1 Panel Stuck — Asymmetric Inertia',
+  'two-opposite': '2 Panels Stuck — Symmetric Imbalance',
+  'two-adjacent': '2 Adjacent Stuck — CoM Offset',
+  'all-stuck': 'ALL PANELS STUCK — Deployment Aborted',
+};
+
+// Failure-mode dot colour for the picker, keyed by the shared vocabulary.
+const FAILURE_MODE_DOTS: Record<ScenarioFailureMode, string> = {
+  nominal: 'bg-green-500',
+  'one-stuck': 'bg-amber-400',
+  'two-adjacent': 'bg-orange-500',
+  'two-opposite': 'bg-amber-500',
+  'all-stuck': 'bg-red-500',
 };
 
 // Initial-tumble ω₀ presets (deg/s), applied about body Z so |ω₀| equals the labelled rate.
@@ -56,60 +82,31 @@ function degToRadVec(d: { x: number; y: number; z: number }): Vector3 {
 }
 
 export default function SimulationPage() {
-  const [searchParams] = useSearchParams();
-  const location = useLocation();
-  const initialConfig = (searchParams.get('config') as ConfigType) || 'long-edge';
-  // Material preselected on the Landing page arrives via router state; it only
-  // seeds the ON-PAGE selector below (header links drop router state, so the
-  // page must own material selection rather than rely on navigation state).
-  const navPanelMass = (location.state as { panelMass?: number } | null)?.panelMass
-    ?? DEFAULT_PARAMS.panelMass;
-  const initialMaterialKey =
-    MATERIAL_PRESETS.find(p => p.panelMass === navPanelMass)?.key ?? 'fr4';
-  const [materialKey, setMaterialKey] = useState<MaterialPresetKey>(initialMaterialKey);
+  // The active scenario lives in the URL — config, material, δt, and failure mode all survive
+  // refresh, copied links, browser Back, and navigation to Compare/Report and back.
+  const { scenario, setScenario, searchParams } = useScenario();
+  const { config, failureMode, delaySeconds, material: materialKey } = scenario;
   const activeMaterial = MATERIAL_PRESETS.find(p => p.key === materialKey)!;
 
-  const [config, setConfig] = useState<ConfigType>(initialConfig);
   const [state, setState] = useState<SpacecraftState>(() =>
     createInitialState(config)
   );
   const [speed, setSpeed] = useState(1);
-  const [delayMagnitude, setDelayMagnitude] = useState<number>(0);
-  const [delayUnit, setDelayUnit] = useState<'ns' | 'µs' | 'ms'>('µs');
   const [wireframe, setWireframe] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showAxes, setShowAxes] = useState(true);
   const [showCoM, setShowCoM] = useState(false);
-  const [failureMode, setFailureMode] = useState<
-    'nominal' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck'
-  >('nominal');
   // Initial body tumble ω₀ in °/s (UI unit). Converted to rad/s at the engine boundary.
   const [tumbleDeg, setTumbleDeg] = useState<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
   const [advancedTumbleOpen, setAdvancedTumbleOpen] = useState(false);
-  const delaySeconds = delayMagnitude * UNIT_TO_SECONDS[delayUnit];
-  const delayPresets = [
-    { label: 'Ideal (0 ns)', magnitude: 0, unit: 'ns' },
-    { label: 'Nominal (250 µs)', magnitude: 250, unit: 'µs' },
-    { label: 'Worst-case (5 ms)', magnitude: 5, unit: 'ms' },
-  ] as const;
-  const params = React.useMemo<SimulationParams>(() => {
-    const base: SimulationParams = { ...DEFAULT_PARAMS };
-    const panelCount = CONFIGURATIONS.find(c => c.id === config)?.panelCount ?? 2;
-    // Sequential burn-wire release: panel i fires at i × δt. Applies to all configs.
-    const panelStartDelays = Array.from({ length: panelCount }, (_, i) => i * delaySeconds);
-    const shortEdgeStartDelays: [number, number, number, number] = [0, delaySeconds, 0, delaySeconds];
-    // A fresh params object per (material, δt, config) — the engine caches
-    // per-params kinematics by object identity, so this must never be mutated.
-    return {
-      ...base,
-      panelMass: activeMaterial.panelMass,
-      hinge: {
-        ...base.hinge,
-        panelStartDelays,
-        shortEdgeStartDelays,
-      },
-    };
-  }, [config, delaySeconds, activeMaterial.panelMass]);
+  const delayDisplay = deriveDelayDisplay(delaySeconds);
+  // A fresh params object per (material, δt, config) from the ONE shared builder — the same
+  // inputs Compare and the Report sweep derive from this scenario. The engine caches per-params
+  // kinematics by object identity, so this memo must hold and the result must never be mutated.
+  const params = React.useMemo<SimulationParams>(
+    () => buildScenarioParams({ config, material: materialKey, delaySeconds }),
+    [config, materialKey, delaySeconds],
+  );
 
   const rafRef = useRef<number>(0);
   const stateRef = useRef(state);
@@ -180,28 +177,11 @@ export default function SimulationPage() {
     });
   }, []);
 
-  const getStuckIndicesForMode = useCallback(
-    (mode: typeof failureMode, cfg: ConfigType): number[] => {
-      const panelCount = CONFIGURATIONS.find(c => c.id === cfg)?.panelCount ?? 2;
-      switch (mode) {
-        case 'one-stuck':
-          return [0];
-        case 'two-opposite':
-          return [0, 1];
-        case 'two-adjacent':
-          return [0, 2];
-        case 'all-stuck':
-          return Array.from({ length: panelCount }, (_, i) => i);
-        default:
-          return [];
-      }
-    },
-    [],
-  );
-
   const applyFailureModeToState = useCallback(
-    (baseState: SpacecraftState, mode: typeof failureMode, cfg: ConfigType): SpacecraftState => {
-      const indices = getStuckIndicesForMode(mode, cfg);
+    (baseState: SpacecraftState, mode: ScenarioFailureMode, cfg: ConfigType): SpacecraftState => {
+      // Canonical per-config topology (shared with Compare and the Report sweep) — not a
+      // page-local guess at which panel indices a mode refers to.
+      const indices = resolveStuckPanels(cfg, mode);
       if (indices.length === 0) return baseState;
       const panels = baseState.panels.map((p, i) =>
         indices.includes(i)
@@ -210,7 +190,7 @@ export default function SimulationPage() {
       );
       return { ...baseState, panels };
     },
-    [getStuckIndicesForMode],
+    [],
   );
 
   // Single reseed path for EVERY scenario change (Reset, config, failure mode, ω₀).
@@ -222,7 +202,7 @@ export default function SimulationPage() {
   const resetSimulation = useCallback(
     (
       nextConfig: ConfigType,
-      nextFailureMode: typeof failureMode,
+      nextFailureMode: ScenarioFailureMode,
       nextTumbleDeg: { x: number; y: number; z: number },
     ) => {
       cancelAnimationFrame(rafRef.current);
@@ -238,24 +218,29 @@ export default function SimulationPage() {
   }, [config, failureMode, tumbleDeg, resetSimulation]);
 
   const handleConfigChange = useCallback((c: ConfigType) => {
-    setConfig(c);
-    resetSimulation(c, failureMode, tumbleDeg);
-  }, [failureMode, tumbleDeg, resetSimulation]);
+    // A configuration change can invalidate the active failure mode (long-edge has no
+    // adjacent/opposite pair) — reconcile to nominal and reseed with the SAME resolved mode
+    // the URL will carry, so the visible state and the URL can never disagree.
+    const nextFailureMode: ScenarioFailureMode =
+      validFailureModes(c).includes(failureMode) ? failureMode : 'nominal';
+    setScenario({ config: c, failureMode: nextFailureMode });
+    resetSimulation(c, nextFailureMode, tumbleDeg);
+  }, [failureMode, tumbleDeg, resetSimulation, setScenario]);
 
   const handleMaterialChange = useCallback((key: MaterialPresetKey) => {
-    setMaterialKey(key);
+    setScenario({ material: key });
     // New panel mass ⇒ new inertia/CoM inputs. Any in-progress or completed
     // trajectory from the previous material is invalid — full reset so stale
     // results can never remain displayed under the new material.
     resetSimulation(config, failureMode, tumbleDeg);
-  }, [config, failureMode, tumbleDeg, resetSimulation]);
+  }, [config, failureMode, tumbleDeg, resetSimulation, setScenario]);
 
   const handleFailureModeChange = useCallback(
-    (mode: typeof failureMode) => {
-      setFailureMode(mode);
+    (mode: ScenarioFailureMode) => {
+      setScenario({ failureMode: mode });
       resetSimulation(config, mode, tumbleDeg);
     },
-    [config, tumbleDeg, resetSimulation],
+    [config, tumbleDeg, resetSimulation, setScenario],
   );
 
   const handleTumbleChange = useCallback(
@@ -278,20 +263,7 @@ export default function SimulationPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border px-6 py-3 flex items-center justify-between">
-        <a href="/" className="font-semibold text-lg tracking-tight">
-          <span className="text-primary">CubeSat</span> Deploy Sim
-        </a>
-        <div className="flex items-center gap-4">
-          <nav className="flex gap-4 text-sm text-muted-foreground">
-            <a href="/" className="hover:text-foreground transition-colors">Overview</a>
-            <a href="/simulate" className="text-foreground">Simulation</a>
-            <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
-          </nav>
-          <ThemeToggle />
-        </div>
-      </header>
+      <SiteHeader scenario={scenario} active="/simulate" searchParams={searchParams} />
 
       <div className="flex h-[calc(100vh-53px)]">
         {/* 3D Viewport */}
@@ -318,32 +290,19 @@ export default function SimulationPage() {
             peakDetumblingTorqueNm={computeAverageRequiredDetumblingTorque(
               peakRef.current.peakDetumbleAngularMomentum,
             )}
-            delayMagnitude={delayMagnitude}
-            delayUnit={delayUnit}
+            delayMagnitude={delayDisplay.magnitude}
+            delayUnit={delayDisplay.unit}
             materialLabel={`${activeMaterial.label} (${activeMaterial.massGrams} g)`}
           />
 
           {failureMode !== 'nominal' && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
               <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold
-                backdrop-blur-sm border shadow-lg
-                ${failureMode === 'all-stuck'
-                  ? 'bg-red-500/20 border-red-500/40 text-red-400'
-                  : failureMode === 'two-adjacent'
-                  ? 'bg-orange-500/20 border-orange-500/40 text-orange-400'
-                  : 'bg-amber-500/20 border-amber-500/40 text-amber-400'
-                }`}>
+                backdrop-blur-sm border shadow-lg ${FAILURE_BANNER_TONE[failureMode]}`}>
                 <AlertTriangle className="h-3.5 w-3.5" />
-                <span>
-                  {{
-                    'one-stuck': '1 Panel Stuck — Asymmetric Inertia',
-                    'two-opposite': '2 Panels Stuck — Symmetric Imbalance',
-                    'two-adjacent': '2 Adjacent Stuck — CoM Offset',
-                    'all-stuck': 'ALL PANELS STUCK — Deployment Aborted',
-                  }[failureMode]}
-                </span>
+                <span>{FAILURE_BANNER_TEXT[failureMode]}</span>
                 <span className="text-[10px] opacity-70 ml-1">
-                  ({getStuckIndicesForMode(failureMode, config).length}/
+                  ({resolveStuckPanels(config, failureMode).length}/
                   {CONFIGURATIONS.find(c => c.id === config)?.panelCount} panels)
                 </span>
               </div>
@@ -435,57 +394,10 @@ export default function SimulationPage() {
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">Timing Discrepancy</Label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={delayMagnitude}
-                    onChange={e => setDelayMagnitude(Math.max(0, Number(e.target.value)))}
-                    className="w-20 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
-                  />
-                  <div className="flex items-center gap-1">
-                    {(['ns', 'µs', 'ms'] as const).map(unit => (
-                      <button
-                        key={unit}
-                        type="button"
-                        onClick={() => setDelayUnit(unit)}
-                        aria-pressed={delayUnit === unit}
-                        className={`px-2 py-1 rounded-md text-[10px] border transition-colors ${
-                          delayUnit === unit
-                            ? 'border-primary bg-primary/10 text-foreground'
-                            : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
-                        }`}
-                      >
-                        {unit}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {delayPresets.map(preset => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() => {
-                        setDelayMagnitude(preset.magnitude);
-                        setDelayUnit(preset.unit);
-                      }}
-                      className="rounded-md border border-border bg-secondary/50 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground hover:bg-secondary"
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-[10px] text-muted-foreground">
-                  Panel i releases at i·δt. Timing resolution = the fixed physics timestep of
-                  {' '}{(DEFAULT_PARAMS.timeStep * 1000).toFixed(2)} ms (1/1200 s): release times
-                  snap to the next step boundary, so a 5 ms δt is honoured to within one step,
-                  while sub-{(DEFAULT_PARAMS.timeStep * 1000).toFixed(2)} ms values quantise to zero.
-                </p>
-              </div>
+              <DelayInput
+                delaySeconds={delaySeconds}
+                onChange={next => setScenario({ delaySeconds: next })}
+              />
 
               <div className="flex items-center justify-between">
                 <Label className="text-xs text-muted-foreground">Wireframe</Label>
@@ -529,29 +441,25 @@ export default function SimulationPage() {
               <CardTitle className="text-sm">Failure Mode</CardTitle>
             </CardHeader>
             <CardContent className="space-y-1.5">
-              {(
-                [
-                  { id: 'nominal', label: 'Nominal', sub: 'All panels free', dot: 'bg-green-500' },
-                  { id: 'one-stuck', label: '1 Panel Stuck', sub: 'Asymmetric inertia', dot: 'bg-amber-400' },
-                  { id: 'two-opposite', label: '2 Opposite', sub: 'Symmetric torque imbalance', dot: 'bg-amber-500' },
-                  { id: 'two-adjacent', label: '2 Adjacent', sub: 'CoM offset + torque bias', dot: 'bg-orange-500' },
-                  { id: 'all-stuck', label: 'All Stuck', sub: 'Deployment aborted', dot: 'bg-red-500' },
-                ] as const
-              ).map(mode => (
+              {/* Only the modes this configuration can physically exhibit — long-edge has two
+                  panels, so it offers no adjacent/opposite pair anywhere in the application. */}
+              {validFailureModes(config).map(mode => (
                 <button
-                  key={mode.id}
-                  onClick={() => handleFailureModeChange(mode.id)}
+                  key={mode}
+                  onClick={() => handleFailureModeChange(mode)}
                   className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors border ${
-                    failureMode === mode.id
+                    failureMode === mode
                       ? 'border-primary bg-primary/10 text-foreground'
                       : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${mode.dot}`} />
-                    <span className="font-medium">{mode.label}</span>
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${FAILURE_MODE_DOTS[mode]}`} />
+                    <span className="font-medium">{FAILURE_MODE_LABELS[mode].label}</span>
                   </div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5 ml-4">{mode.sub}</div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5 ml-4">
+                    {FAILURE_MODE_LABELS[mode].sub}
+                  </div>
                 </button>
               ))}
 

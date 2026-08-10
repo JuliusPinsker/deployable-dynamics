@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import jsPDFDefault, { jsPDF as jsPDFNamed } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { motion } from 'framer-motion';
@@ -21,12 +21,38 @@ import { DETUMBLING_TIME_REQUIREMENT_S } from '@/lib/physics/engine';
 import { formatTorqueNm } from '@/lib/utils';
 import { Card, CardTitle, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import SiteHeader from '@/components/SiteHeader';
+import { scenarioSearch, useScenario } from '@/hooks/useScenario';
+import { FAILURE_MODE_LABELS, FAILURE_MODE_REPORT_LABELS } from '@/lib/scenario/scenarioSpec';
+import { formatDelay } from '@/lib/scenario/delay';
+import { buildProtocolLines, protocolToPdfLines } from '@/lib/scenario/protocol';
 
 const materialLabels: Record<PanelMaterial, string> = {
   fr4: 'FR4',
   'al-kapton': 'Al/Kapton',
   cfrp: 'CFRP',
 };
+
+/** Filter parameters, kept in the URL so a chosen report view is shareable and survives navigation. */
+const FILTER_PARAM_KEYS = {
+  configs: 'configs',
+  failures: 'failures',
+  materials: 'materials',
+} as const;
+
+/**
+ * Parses a comma-separated filter parameter. An absent parameter means "all" — the documented
+ * default — while an explicitly empty one means "none selected".
+ */
+function parseFilterParam<T extends string>(
+  raw: string | null,
+  allowed: readonly T[],
+  fallback: T[],
+): T[] {
+  if (raw === null) return fallback;
+  const requested = raw.split(',').map(value => value.trim()).filter(Boolean);
+  return allowed.filter(value => requested.includes(value));
+}
 
 // Only the coupled config's raw id needs a friendlier phrase; the internal identifier
 // 'short-edge-long-edge' is unchanged everywhere else (routing, physics, other configs).
@@ -35,13 +61,9 @@ const configLabels: Partial<Record<SimulationConfig, string>> = {
 };
 
 // Display-only "-stuck" suffix for the two-panel modes; internal values stay
-// 'two-adjacent'/'two-opposite' (consistent with ComparePage/SimulationPage).
-const failureModeLabels: Record<FailureMode, string> = {
-  'one-stuck': 'one-stuck',
-  'two-adjacent': 'two-adjacent-stuck',
-  'two-opposite': 'two-opposite-stuck',
-  'all-stuck': 'all-stuck',
-};
+// 'two-adjacent'/'two-opposite' (consistent with ComparePage/SimulationPage). Sourced from the
+// shared scenario module so every spelling of a failure mode has one home.
+const failureModeLabels: Record<FailureMode, string> = FAILURE_MODE_REPORT_LABELS;
 
 // Reader-facing column labels for the on-screen table — Greek symbols paired with a
 // plain-English qualifier (matching ComparePage's "Peak ω (°/s)" convention) and the
@@ -89,13 +111,35 @@ function formatNumber(value: number, digits: number): string {
 }
 
 export function ReportPage() {
-  const navigate = useNavigate();
-  const [isExporting, setIsExporting] = useState(false);
-  const [selectedConfigs, setSelectedConfigs] = useState<SimulationConfig[]>(REPORT_CONFIGS);
-  const [selectedFailures, setSelectedFailures] = useState<FailureMode[]>(REPORT_FAILURES);
-  const [selectedMaterials, setSelectedMaterials] = useState<PanelMaterial[]>(REPORT_MATERIALS);
+  // The scenario travels through this page for navigation continuity, but only δt reaches the
+  // physics: config/material/failure are the ACTIVE INTERACTIVE SCENARIO and never filter the
+  // matrix. The report's own filters are separate URL parameters, below.
+  const { scenario, searchParams, setSearchParam } = useScenario();
+  const { delaySeconds } = scenario;
 
-  // The 42-scenario physics sweep takes ~24 s on first load (cached afterwards),
+  const [isExporting, setIsExporting] = useState(false);
+
+  const selectedConfigs = useMemo(
+    () => parseFilterParam(searchParams.get(FILTER_PARAM_KEYS.configs), REPORT_CONFIGS, REPORT_CONFIGS),
+    [searchParams],
+  );
+  const selectedFailures = useMemo(
+    () => parseFilterParam(searchParams.get(FILTER_PARAM_KEYS.failures), REPORT_FAILURES, REPORT_FAILURES),
+    [searchParams],
+  );
+  const selectedMaterials = useMemo(
+    () => parseFilterParam(searchParams.get(FILTER_PARAM_KEYS.materials), REPORT_MATERIALS, REPORT_MATERIALS),
+    [searchParams],
+  );
+
+  const setFilter = useCallback(
+    (key: keyof typeof FILTER_PARAM_KEYS, values: string[]) => {
+      setSearchParam(FILTER_PARAM_KEYS[key], values.join(','));
+    },
+    [setSearchParam],
+  );
+
+  // The 42-scenario physics sweep takes ~24 s per δt on first use (cached per δt afterwards),
   // so it runs asynchronously — one scenario per event-loop turn — with progress
   // shown instead of freezing the page. Filter changes never re-run physics.
   const [allRows, setAllRows] = useState<ReportRow[] | null>(null);
@@ -103,18 +147,22 @@ export function ReportPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setAllRows(null);
+    setGenProgress({ done: 0, total: 42 });
     generateReportRowsAsync((done, total) => {
       if (!cancelled) setGenProgress({ done, total });
-    }).then(rows => {
+    }, delaySeconds).then(rows => {
       if (!cancelled) setAllRows(rows);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [delaySeconds]);
 
-  // Failure modes actually valid for the currently selected configuration(s) — an
-  // empty selection means "all configs", mirroring filterRows's own empty-means-all
-  // semantics. long-edge (2 panels) only supports one-stuck/all-stuck, so selecting
-  // only long-edge collapses this to 2 modes instead of the full 4.
+  // Failure modes actually valid for the currently selected configuration(s) — the UNION across
+  // them, not the intersection: selecting long-edge alongside short-edge keeps two-adjacent and
+  // two-opposite available (short-edge supports them), and the filtered result simply contains no
+  // long-edge rows for those modes because the matrix never generated any. A mode disappears only
+  // when NO selected configuration supports it, i.e. when the filter narrows to long-edge alone.
+  // An empty selection means "all configs", mirroring filterRows's own empty-means-all semantics.
   const applicableFailureModes = useMemo(() => {
     const configsInScope = selectedConfigs.length === 0 ? REPORT_CONFIGS : selectedConfigs;
     const applicable = new Set<FailureMode>();
@@ -130,12 +178,10 @@ export function ReportPage() {
   // modes" only if every previously-selected mode became invalid; otherwise leaves the
   // selection (and its object identity) untouched.
   useEffect(() => {
-    setSelectedFailures((prev) => {
-      const stillValid = prev.filter((f) => applicableFailureModes.includes(f));
-      if (prev.length === stillValid.length) return prev;
-      return stillValid.length > 0 ? stillValid : applicableFailureModes;
-    });
-  }, [applicableFailureModes]);
+    const stillValid = selectedFailures.filter((f) => applicableFailureModes.includes(f));
+    if (stillValid.length === selectedFailures.length) return;
+    setFilter('failures', stillValid.length > 0 ? stillValid : applicableFailureModes);
+  }, [applicableFailureModes, selectedFailures, setFilter]);
 
   const filteredRows = useMemo(
     () => (allRows ? filterRows(allRows, selectedConfigs, selectedFailures, selectedMaterials) : []),
@@ -178,28 +224,52 @@ export function ReportPage() {
   );
 
   const toggleConfig = (cfg: SimulationConfig) => {
-    setSelectedConfigs((prev) =>
-      prev.includes(cfg) ? prev.filter(c => c !== cfg) : [...prev, cfg],
+    setFilter(
+      'configs',
+      selectedConfigs.includes(cfg)
+        ? selectedConfigs.filter(c => c !== cfg)
+        : REPORT_CONFIGS.filter(c => selectedConfigs.includes(c) || c === cfg),
     );
   };
 
   const toggleFailure = (failure: FailureMode) => {
-    setSelectedFailures((prev) =>
-      prev.includes(failure) ? prev.filter(f => f !== failure) : [...prev, failure],
+    setFilter(
+      'failures',
+      selectedFailures.includes(failure)
+        ? selectedFailures.filter(f => f !== failure)
+        : REPORT_FAILURES.filter(f => selectedFailures.includes(f) || f === failure),
     );
   };
 
   const toggleMaterial = (material: PanelMaterial) => {
-    setSelectedMaterials((prev) =>
-      prev.includes(material) ? prev.filter(m => m !== material) : [...prev, material],
+    setFilter(
+      'materials',
+      selectedMaterials.includes(material)
+        ? selectedMaterials.filter(m => m !== material)
+        : REPORT_MATERIALS.filter(m => selectedMaterials.includes(m) || m === material),
     );
   };
 
   const resetFilters = () => {
-    setSelectedConfigs(REPORT_CONFIGS);
-    setSelectedFailures(REPORT_FAILURES);
-    setSelectedMaterials(REPORT_MATERIALS);
+    setFilter('configs', [...REPORT_CONFIGS]);
+    setFilter('failures', [...REPORT_FAILURES]);
+    setFilter('materials', [...REPORT_MATERIALS]);
   };
+
+  // The evaluation protocol, built once and rendered both on screen and into the PDF so the two
+  // statements cannot drift. `totalScenarios` is the UNFILTERED matrix.
+  const protocolLines = useMemo(
+    () =>
+      buildProtocolLines({
+        delaySeconds,
+        selectedConfigCount: selectedConfigs.length,
+        selectedFailureCount: selectedFailures.length,
+        selectedMaterialCount: selectedMaterials.length,
+        totalScenarios: allRows?.length ?? 42,
+        shownScenarios: filteredRows.length,
+      }),
+    [delaySeconds, selectedConfigs, selectedFailures, selectedMaterials, allRows, filteredRows],
+  );
 
   const exportToPDF = () => {
     setIsExporting(true);
@@ -224,11 +294,22 @@ export function ReportPage() {
     );
     doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 29);
 
-    const filterLine = `Configs: ${selectedConfigs.length}/4 · Failure Modes: ${selectedFailures.length}/4 · Materials: ${selectedMaterials.length}/3`;
-    doc.text(filterLine, 14, 35);
+    // Evaluation protocol — the SAME lines the page displays, with only an ASCII substitution
+    // for characters jsPDF's standard fonts cannot render. Same filters, same δt by construction.
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Evaluation protocol', 14, 37);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    let protocolY = 42;
+    for (const line of protocolToPdfLines(protocolLines)) {
+      // maxWidth lets jsPDF wrap long protocol values inside the landscape page margin.
+      doc.text(line, 14, protocolY, { maxWidth: 269 });
+      protocolY += line.length > 150 ? 9 : 5;
+    }
 
     doc.setFontSize(11);
-    doc.text('Summary Statistics:', 14, 45);
+    doc.text('Summary Statistics:', 14, protocolY + 5);
     doc.setFontSize(9);
 
     const statLines = [
@@ -240,7 +321,7 @@ export function ReportPage() {
       `Max Peak w: ${stats.maxPeakOmegaDegPerS.toFixed(2)} deg/s`,
     ];
 
-    let yPos = 51;
+    let yPos = protocolY + 11;
     for (const line of statLines) {
       doc.text(line, 14, yPos);
       yPos += 5;
@@ -344,8 +425,11 @@ export function ReportPage() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
-      className="min-h-screen bg-background p-6"
+      className="min-h-screen bg-background"
     >
+      <SiteHeader scenario={scenario} active="/report" searchParams={searchParams} />
+
+      <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Deployment Report</h1>
@@ -354,8 +438,12 @@ export function ReportPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => navigate('/compare')}>
-            Back to Compare
+          <Button variant="outline" asChild>
+            {/* Carries the scenario AND this page's filter parameters, so returning to the
+                report restores the same view. */}
+            <Link to={{ pathname: '/compare', search: scenarioSearch(scenario, searchParams) }}>
+              Back to Compare
+            </Link>
           </Button>
           <Button onClick={exportToPDF} disabled={isExporting || !allRows}>
             {isExporting ? 'Exporting...' : 'Export PDF'}
@@ -388,9 +476,54 @@ export function ReportPage() {
         </Card>
       )}
 
+      {/* Scope separation: what the user selected interactively vs what the matrix contains. */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Active interactive scenario</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          <div className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs">
+            <span data-testid="active-scenario-config">
+              Configuration: {configLabels[scenario.config] ?? scenario.config}
+            </span>
+            <span data-testid="active-scenario-material">
+              Material: {materialLabels[scenario.material] ?? scenario.material}
+            </span>
+            <span data-testid="active-scenario-failure">
+              Failure mode: {FAILURE_MODE_LABELS[scenario.failureMode].label}
+            </span>
+            <span data-testid="active-scenario-dt">δt: {formatDelay(delaySeconds)}</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Configuration, material, and failure mode are carried through this page&apos;s URL so
+            navigation between Simulation, Compare, and Report is continuous. They do{' '}
+            <strong>not</strong> restrict the {allRows?.length ?? 42}-scenario matrix — only the
+            report matrix filters below determine which rows are displayed. The active timing
+            discrepancy δt <strong>does</strong> apply globally: every report row is computed at
+            δt = {formatDelay(delaySeconds)}.
+          </p>
+        </CardContent>
+      </Card>
+
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle>Filters</CardTitle>
+          <CardTitle>Evaluation protocol</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <dl className="grid grid-cols-1 gap-1.5 text-xs">
+            {protocolLines.map(line => (
+              <div key={line.label} className="flex flex-col sm:flex-row sm:gap-2">
+                <dt className="font-medium text-foreground sm:min-w-[190px]">{line.label}:</dt>
+                <dd className="text-muted-foreground" data-testid="protocol-value">{line.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Report matrix filters</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -445,7 +578,7 @@ export function ReportPage() {
 
           <div className="flex items-center justify-between">
             <div className="text-sm text-muted-foreground">
-              Showing {filteredRows.length} of 42 scenarios
+              Showing {filteredRows.length} of {allRows?.length ?? 42} scenarios
             </div>
             <Button variant="outline" onClick={resetFilters}>
               Reset Filters
@@ -566,6 +699,7 @@ export function ReportPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
     </motion.div>
   );
 }

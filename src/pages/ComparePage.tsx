@@ -1,14 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Label } from '@/components/ui/label';
 import {
   CONFIGURATIONS,
-  DEFAULT_PARAMS,
   MATERIAL_PRESETS,
   type ConfigType,
-  type MaterialPresetKey,
 } from '@/lib/physics/types';
 import {
   DETUMBLING_TIME_REQUIREMENT_S,
@@ -25,7 +21,18 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, BarChart, Bar, ResponsiveContainer } from 'recharts';
-import ThemeToggle from '@/components/ui/theme-toggle';
+import SiteHeader from '@/components/SiteHeader';
+import DelayInput from '@/components/DelayInput';
+import { useScenario } from '@/hooks/useScenario';
+import {
+  FAILURE_MODE_LABELS,
+  NOT_APPLICABLE_TEXT,
+  buildScenarioParams,
+  isFailureModeValid,
+  resolveStuckPanels,
+  validFailureModes,
+  type ScenarioFailureMode,
+} from '@/lib/scenario/scenarioSpec';
 import { AlertTriangle } from 'lucide-react';
 
 const chartConfig: ChartConfig = {
@@ -37,14 +44,7 @@ const chartConfig: ChartConfig = {
 
 const COLORS = ['hsl(210, 100%, 55%)', 'hsl(168, 70%, 45%)', 'hsl(35, 95%, 55%)', 'hsl(280, 65%, 55%)'];
 
-const UNIT_TO_SECONDS: Record<'ns' | 'µs' | 'ms', number> = {
-  ns: 1e-9,
-  µs: 1e-6,
-  ms: 1e-3,
-};
-
-type AnomalyType = 'none' | 'one-stuck' | 'two-opposite' | 'two-adjacent' | 'all-stuck';
-type FailureAnomalyType = Exclude<AnomalyType, 'none'>;
+type FailureAnomalyType = Exclude<ScenarioFailureMode, 'nominal'>;
 
 const FAILURE_SCENARIO_TEXT: Record<FailureAnomalyType, string> = {
   'one-stuck': 'Panel Failure: 1 panel jammed at 0° — asymmetric inertia disturbance',
@@ -79,42 +79,83 @@ export function deploymentSettleCut(frames: SimulationFrame[]): number {
 }
 
 
-export default function ComparePage() {
-  const location = useLocation();
-  const [stuckPanels, setStuckPanels] = useState<number[]>([]);
-  const [anomaly, setAnomaly] = useState<AnomalyType>('none');
-  const [delayMagnitude, setDelayMagnitude] = useState<number>(0);
-  const [delayUnit, setDelayUnit] = useState<'ns' | 'µs' | 'ms'>('µs');
-  const delaySeconds = delayMagnitude * UNIT_TO_SECONDS[delayUnit];
-  const delayPresets = [
-    { label: 'Ideal (0 ns)', magnitude: 0, unit: 'ns' },
-    { label: 'Nominal (250 µs)', magnitude: 250, unit: 'µs' },
-    { label: 'Worst-case (5 ms)', magnitude: 5, unit: 'ms' },
-  ] as const;
-  // Router state from the Landing page only SEEDS the on-page selector (header
-  // links drop router state, so the page owns material selection).
-  const navPanelMass = (location.state as { panelMass?: number } | null)?.panelMass
-    ?? DEFAULT_PARAMS.panelMass;
-  const [materialKey, setMaterialKey] = useState<MaterialPresetKey>(
-    MATERIAL_PRESETS.find(preset => preset.panelMass === navPanelMass)?.key ?? 'fr4',
+/** Marker used consistently wherever the active reference configuration is highlighted. */
+const ACTIVE_SCENARIO_LABEL = 'Active scenario';
+
+function ActiveScenarioBadge() {
+  return (
+    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-primary/15 text-primary border border-primary/30">
+      {ACTIVE_SCENARIO_LABEL}
+    </span>
   );
-  const activeMaterial = MATERIAL_PRESETS.find(preset => preset.key === materialKey)!;
+}
 
-  const stuckConfig = useMemo(() => {
-    switch (anomaly) {
-      case 'one-stuck': return [0];
-      case 'two-opposite': return [0, 1];
-      case 'two-adjacent': return [0, 2];
-      case 'all-stuck': return [0, 1, 2, 3, 4, 5];
-      default: return [];
-    }
-  }, [anomaly]);
+/**
+ * Chart legend covering ALL four configurations: those excluded by the active failure mode stay
+ * listed and are labelled not-applicable, so a reader never has to infer why a curve is missing.
+ */
+function ComparisonLegend({
+  referenceConfig,
+  failureMode,
+}: {
+  referenceConfig: ConfigType;
+  failureMode: ScenarioFailureMode;
+}) {
+  return (
+    <div className="flex flex-wrap gap-4 mt-2 justify-center">
+      {CONFIGURATIONS.map((c, i) => {
+        const applicable = isFailureModeValid(c.id, failureMode);
+        return (
+          <div key={c.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <div
+              className="w-3 h-0.5 rounded"
+              style={{ backgroundColor: applicable ? COLORS[i] : 'transparent' }}
+            />
+            <span className={c.id === referenceConfig ? 'text-foreground font-medium' : undefined}>
+              {c.shortName}
+            </span>
+            {c.id === referenceConfig && <ActiveScenarioBadge />}
+            {!applicable && (
+              <span className="text-[10px] italic">{NOT_APPLICABLE_TEXT}</span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
-  const activeFailureText = anomaly !== 'none' ? FAILURE_SCENARIO_TEXT[anomaly] : null;
+export default function ComparePage() {
+  // Same URL-owned scenario the Simulation page uses. `config` is the ACTIVE REFERENCE
+  // configuration here — it is highlighted, never used to filter: this page always compares
+  // every configuration that can physically exhibit the active failure mode.
+  const { scenario, setScenario, searchParams } = useScenario();
+  const { config: referenceConfig, failureMode, delaySeconds } = scenario;
+  const activeMaterial = MATERIAL_PRESETS.find(preset => preset.key === scenario.material)!;
+
+  const activeFailureText = failureMode !== 'nominal' ? FAILURE_SCENARIO_TEXT[failureMode] : null;
+
+  /**
+   * Configurations that have a physically valid result for the active failure mode. Under
+   * `two-adjacent`/`two-opposite` the 2-panel long-edge configuration has no distinct panel pair,
+   * so it is excluded from computation entirely and reported as not-applicable rather than being
+   * given a substituted mode or a fabricated number.
+   */
+  const comparedConfigs = useMemo(
+    () => CONFIGURATIONS.filter(entry => isFailureModeValid(entry.id, failureMode)),
+    [failureMode],
+  );
+  const comparedIds = useMemo(
+    () => comparedConfigs.map(entry => entry.id),
+    [comparedConfigs],
+  );
 
   const failureImpactData = useMemo(() => {
     return CONFIGURATIONS.map((config, i) => {
-      const stuckCount = Math.min(stuckConfig.length, config.panelCount);
+      const applicable = isFailureModeValid(config.id, failureMode);
+      // Canonical per-config stuck indices — the same resolver the Simulation page and the
+      // report sweep use, so "all-stuck" means every panel of THIS configuration.
+      const stuckCount = applicable ? resolveStuckPanels(config.id, failureMode).length : 0;
       const deployedCount = config.panelCount - stuckCount;
       const stuckFraction = stuckCount / config.panelCount;
 
@@ -135,6 +176,7 @@ export default function ComparePage() {
       return {
         config,
         color: COLORS[i],
+        applicable,
         stuckCount,
         deployedCount,
         coupling,
@@ -142,7 +184,7 @@ export default function ComparePage() {
         progressBarColor,
       };
     });
-  }, [stuckConfig]);
+  }, [failureMode]);
 
   // Physics-driven comparison runs for the SELECTED material, computed in an
   // effect (one config per event-loop turn) with a computing badge instead of
@@ -150,38 +192,29 @@ export default function ComparePage() {
   // (material/δt/anomaly change) can never overwrite newer results with stale
   // ones.
   const [allSimData, setAllSimData] =
-    useState<Record<ConfigType, SimulationFrame[]> | null>(null);
+    useState<Partial<Record<ConfigType, SimulationFrame[]>> | null>(null);
   const [computing, setComputing] = useState(true);
+
+  const materialKey = scenario.material;
 
   useEffect(() => {
     let cancelled = false;
     setComputing(true);
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    const results: Record<ConfigType, SimulationFrame[]> = {} as Record<ConfigType, SimulationFrame[]>;
-    const resolvedStuck = stuckConfig ?? [];
-    const panelMass = activeMaterial.panelMass;
+    const results: Partial<Record<ConfigType, SimulationFrame[]>> = {};
 
     (async () => {
-      for (const c of configs) {
+      for (const c of comparedIds) {
         // Yield to the event loop before each config so rendering stays live.
         await new Promise(resolve => setTimeout(resolve, 0));
         if (cancelled) return;
         // Sequential burn-wire release: panel i fires at i × δt, per config's panel count.
         // Deployment is physics-driven (calibrated torsional spring-damper hinge from
-        // DEFAULT_PARAMS) — the same authoritative dynamics used by the Report sweep.
+        // DEFAULT_PARAMS) — the same authoritative dynamics used by the Report sweep, built by
+        // the SAME shared params builder from the active scenario.
         // The horizon is a CAP: each run ends once all panels latch (plus the observation
         // window); the slowest 3-stage coupled config completes in ~12 s of simulated time.
-        const panelCount = CONFIGURATIONS.find(cfg => cfg.id === c)?.panelCount ?? 2;
-        const panelStartDelays = Array.from({ length: panelCount }, (_, i) => i * delaySeconds);
-        const params = {
-          ...DEFAULT_PARAMS,
-          panelMass,
-          hinge: {
-            ...DEFAULT_PARAMS.hinge,
-            panelStartDelays,
-          },
-        };
-        const frames = runFullSimulation(c, params, 90, resolvedStuck);
+        const params = buildScenarioParams({ config: c, material: materialKey, delaySeconds });
+        const frames = runFullSimulation(c, params, 90, resolveStuckPanels(c, failureMode));
         // The engine keeps the body coasting through a post-deployment observation window, so
         // `time` advances monotonically instead of freezing at settle. Trim to the deployment
         // window via panel-angle settle detection so the shared chart x-axis and deploy-time
@@ -195,18 +228,17 @@ export default function ComparePage() {
     })();
 
     return () => { cancelled = true; };
-  }, [stuckConfig, activeMaterial.panelMass, delaySeconds]);
+  }, [comparedIds, failureMode, materialKey, delaySeconds]);
 
   // Merge data for angular velocity chart
   const angVelData = useMemo(() => {
     if (!allSimData) return [];
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    const maxLen = Math.max(...configs.map(c => allSimData[c].length));
-    const data: any[] = [];
+    const maxLen = Math.max(0, ...comparedIds.map(c => allSimData[c]?.length ?? 0));
+    const data: Record<string, number>[] = [];
     for (let i = 0; i < maxLen; i += 2) {
-      const point: any = {};
-      for (const c of configs) {
-        const frame = allSimData[c][i];
+      const point: Record<string, number> = {};
+      for (const c of comparedIds) {
+        const frame = allSimData[c]?.[i];
         if (frame) {
           point.time = frame.time;
           const totalOmega = Math.sqrt(
@@ -220,20 +252,19 @@ export default function ComparePage() {
       if (point.time !== undefined) data.push(point);
     }
     return data;
-  }, [allSimData]);
+  }, [allSimData, comparedIds]);
 
   // τ_avg,detumble over time (N·m) — each raw frame's H(t) divided by the assumed
   // allocation. Values are plotted RAW: they sit around 1e-7 N·m, so any fixed-decimal
   // rounding here would floor the whole series to zero.
   const detumbleTorqueData = useMemo(() => {
     if (!allSimData) return [];
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    const maxLen = Math.max(...configs.map(c => allSimData[c].length));
+    const maxLen = Math.max(0, ...comparedIds.map(c => allSimData[c]?.length ?? 0));
     const data: Record<string, number>[] = [];
     for (let i = 0; i < maxLen; i += 2) {
       const point: Record<string, number> = {};
-      for (const c of configs) {
-        const frame = allSimData[c][i];
+      for (const c of comparedIds) {
+        const frame = allSimData[c]?.[i];
         if (frame) {
           point.time = frame.time;
           point[c] = frameAverageRequiredDetumblingTorque(frame);
@@ -242,55 +273,41 @@ export default function ComparePage() {
       if (point.time !== undefined) data.push(point);
     }
     return data;
-  }, [allSimData]);
+  }, [allSimData, comparedIds]);
 
-  // Peak acceleration bar chart
+  // Peak acceleration bar chart — only configurations the active failure mode applies to.
   const peakAccelData = useMemo(() => {
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    return configs.map((c, i) => {
-      const frames = allSimData?.[c] ?? [];
+    return comparedConfigs.map(entry => {
+      const frames = allSimData?.[entry.id] ?? [];
       let peakAccel = 0;
       for (const f of frames) {
         const total = Math.sqrt(f.angularAcceleration.x ** 2 + f.angularAcceleration.y ** 2 + f.angularAcceleration.z ** 2);
         peakAccel = Math.max(peakAccel, total);
       }
       return {
-        name: CONFIGURATIONS[i].shortName,
+        name: entry.shortName,
         value: Number(((peakAccel * 180) / Math.PI).toFixed(2)),
-        fill: COLORS[i],
+        fill: COLORS[CONFIGURATIONS.indexOf(entry)],
       };
     });
-  }, [allSimData]);
+  }, [allSimData, comparedConfigs]);
 
   // Deployment time
   const deployTimeData = useMemo(() => {
-    const configs: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
-    return configs.map((c, i) => {
-      const frames = allSimData?.[c] ?? [];
+    return comparedConfigs.map(entry => {
+      const frames = allSimData?.[entry.id] ?? [];
       const lastFrame = frames[frames.length - 1];
       return {
-        name: CONFIGURATIONS[i].shortName,
+        name: entry.shortName,
         value: Number((lastFrame?.time || 0).toFixed(2)),
-        fill: COLORS[i],
+        fill: COLORS[CONFIGURATIONS.indexOf(entry)],
       };
     });
-  }, [allSimData]);
+  }, [allSimData, comparedConfigs]);
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b border-border px-6 py-3 flex items-center justify-between">
-        <a href="/" className="font-semibold text-lg tracking-tight">
-          <span className="text-primary">CubeSat</span> Deploy Sim
-        </a>
-        <div className="flex items-center gap-4">
-          <nav className="flex gap-4 text-sm text-muted-foreground">
-            <a href="/" className="hover:text-foreground transition-colors">Overview</a>
-            <a href="/simulate" className="hover:text-foreground transition-colors">Simulation</a>
-            <a href="/compare" className="text-foreground">Compare</a>
-          </nav>
-          <ThemeToggle />
-        </div>
-      </header>
+      <SiteHeader scenario={scenario} active="/compare" searchParams={searchParams} />
 
       <div className="max-w-7xl mx-auto p-6 space-y-6">
         <div className="flex items-center justify-between">
@@ -298,7 +315,9 @@ export default function ComparePage() {
             <h1 className="text-2xl font-bold">Configuration Comparison</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Quantitative comparison of deployment dynamics across all 4 configurations —
-              computed for ONE selected panel material at a time
+              computed for ONE selected panel material at a time, under the same δt and failure
+              mode. The reference configuration is highlighted as the {ACTIVE_SCENARIO_LABEL}; it
+              never removes the other configurations.
             </p>
             <span className="text-sm text-muted-foreground">
               Material: {activeMaterial.label} ({activeMaterial.massGrams} g/panel)
@@ -317,7 +336,7 @@ export default function ComparePage() {
                   type="button"
                   role="radio"
                   aria-checked={materialKey === preset.key}
-                  onClick={() => setMaterialKey(preset.key)}
+                  onClick={() => setScenario({ material: preset.key })}
                   className={`px-2.5 py-1.5 rounded-md text-xs border transition-colors ${
                     materialKey === preset.key
                       ? 'border-primary bg-primary/10 text-foreground'
@@ -328,16 +347,38 @@ export default function ComparePage() {
                 </button>
               ))}
             </div>
-            <Select value={anomaly} onValueChange={(value) => setAnomaly(value as AnomalyType)}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Anomaly scenario" />
+            {/* Reference configuration: highlights one configuration as the active scenario and
+                travels with it to the Simulation page. It never filters the comparison. */}
+            <Select
+              value={referenceConfig}
+              onValueChange={(value) => setScenario({ config: value as ConfigType })}
+            >
+              <SelectTrigger className="w-56" aria-label="Active reference configuration">
+                <SelectValue placeholder="Reference configuration" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">Nominal (no failure)</SelectItem>
-                <SelectItem value="one-stuck">One panel stuck</SelectItem>
-                <SelectItem value="two-opposite">Two panels (opposite)</SelectItem>
-                <SelectItem value="two-adjacent">Two panels (adjacent)</SelectItem>
-                <SelectItem value="all-stuck">All panels stuck (total failure)</SelectItem>
+                {CONFIGURATIONS.map(entry => (
+                  <SelectItem key={entry.id} value={entry.id}>
+                    Reference: {entry.shortName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={failureMode}
+              onValueChange={(value) => setScenario({ failureMode: value as ScenarioFailureMode })}
+            >
+              <SelectTrigger className="w-48" aria-label="Failure mode">
+                <SelectValue placeholder="Failure mode" />
+              </SelectTrigger>
+              <SelectContent>
+                {/* Same valid-mode resolver as Simulation and Report — a long-edge reference
+                    configuration offers no adjacent/opposite pair. */}
+                {validFailureModes(referenceConfig).map(mode => (
+                  <SelectItem key={mode} value={mode}>
+                    {FAILURE_MODE_LABELS[mode].label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -350,10 +391,10 @@ export default function ComparePage() {
               <p className="font-semibold text-amber-200/90">{activeFailureText}</p>
             </div>
             <div className="flex items-center gap-3">
-              {failureImpactData.map(({ config, stuckCount }) => {
+              {failureImpactData.map(({ config, applicable, stuckCount }) => {
                 return (
                   <span key={config.id} className="font-mono text-[11px] bg-amber-900/30 text-amber-300/80 px-2 py-1 rounded">
-                    {config.shortName}: {stuckCount} stuck
+                    {config.shortName}: {applicable ? `${stuckCount} stuck` : NOT_APPLICABLE_TEXT}
                   </span>
                 );
               })}
@@ -363,56 +404,18 @@ export default function ComparePage() {
 
         {/* Timing-coupling controls (Bugs 3 & 4) */}
         <div className="flex flex-wrap items-end gap-x-6 gap-y-3 rounded-lg border border-border bg-card px-4 py-3">
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">Timing Discrepancy δt</Label>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={0}
-                step={1}
-                value={delayMagnitude}
-                onChange={e => setDelayMagnitude(Math.max(0, Number(e.target.value)))}
-                className="w-20 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
-              />
-              <div className="flex items-center gap-1">
-                {(['ns', 'µs', 'ms'] as const).map(unit => (
-                  <button
-                    key={unit}
-                    type="button"
-                    onClick={() => setDelayUnit(unit)}
-                    aria-pressed={delayUnit === unit}
-                    className={`px-2 py-1 rounded-md text-[10px] border transition-colors ${
-                      delayUnit === unit
-                        ? 'border-primary bg-primary/10 text-foreground'
-                        : 'border-transparent bg-secondary/50 text-muted-foreground hover:text-foreground hover:bg-secondary'
-                    }`}
-                  >
-                    {unit}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {delayPresets.map(preset => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => { setDelayMagnitude(preset.magnitude); setDelayUnit(preset.unit); }}
-                  className="rounded-md border border-border bg-secondary/50 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground hover:bg-secondary"
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <DelayInput
+            delaySeconds={delaySeconds}
+            onChange={next => setScenario({ delaySeconds: next })}
+            className="space-y-1.5"
+          />
+          {/* Why δt matters here. The quantisation statement lives in the shared δt control
+              (one statement per page — the e2e caption check asserts a single match). */}
           <p className="text-[11px] text-muted-foreground max-w-md">
             δt staggers burn-wire release (panel i fires at i·δt): at δt = 0 the panel-pair
             reactions cancel and the body stays at rest; at δt &gt; 0 the symmetry breaks and the
-            body gains angular velocity. Deployment is physics-driven (torsional spring hinge).
-            Timing resolution = the fixed physics timestep of
-            {' '}{(DEFAULT_PARAMS.timeStep * 1000).toFixed(2)} ms (1/1200 s): release times snap
-            to the next step boundary — a 5 ms δt is honoured to within one step; values below
-            one step quantise to zero.
+            body gains angular velocity. Deployment is physics-driven (torsional spring hinge),
+            and all configurations are compared under the same δt.
           </p>
         </div>
 
@@ -423,7 +426,7 @@ export default function ComparePage() {
               <CardTitle className="text-sm">
                 <>
                   Total Angular Velocity (°/s) vs Time
-                  {anomaly !== 'none' && (
+                  {failureMode !== 'nominal' && (
                     <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 ml-2">
                       FAILURE MODE
                     </span>
@@ -438,20 +441,24 @@ export default function ComparePage() {
                   <XAxis dataKey="time" tick={{ fontSize: 11 }} label={{ value: 'Time (s)', position: 'insideBottom', offset: -5, style: { fontSize: 11 } }} />
                   <YAxis tick={{ fontSize: 11 }} label={{ value: '°/s', angle: -90, position: 'insideLeft', style: { fontSize: 11 } }} />
                   <ChartTooltip content={<ChartTooltipContent />} />
-                  <Line type="monotone" dataKey="long-edge" stroke={COLORS[0]} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="double-long-edge" stroke={COLORS[1]} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="short-edge" stroke={COLORS[2]} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="short-edge-long-edge" stroke={COLORS[3]} strokeWidth={2} dot={false} />
+                  {/* Only configurations with a valid result for this failure mode get a series;
+                      the active reference configuration is drawn heavier. */}
+                  {comparedConfigs.map(entry => (
+                    <Line
+                      key={entry.id}
+                      type="monotone"
+                      dataKey={entry.id}
+                      stroke={COLORS[CONFIGURATIONS.indexOf(entry)]}
+                      strokeWidth={entry.id === referenceConfig ? 3.5 : 2}
+                      dot={false}
+                    />
+                  ))}
                 </LineChart>
               </ChartContainer>
-              <div className="flex gap-4 mt-2 justify-center">
-                {CONFIGURATIONS.map((c, i) => (
-                  <div key={c.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <div className="w-3 h-0.5 rounded" style={{ backgroundColor: COLORS[i] }} />
-                    {c.shortName}
-                  </div>
-                ))}
-              </div>
+              <ComparisonLegend
+                referenceConfig={referenceConfig}
+                failureMode={failureMode}
+              />
             </CardContent>
           </Card>
 
@@ -487,20 +494,23 @@ export default function ComparePage() {
                       />
                     }
                   />
-                  <Line type="monotone" dataKey="long-edge" stroke={COLORS[0]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
-                  <Line type="monotone" dataKey="double-long-edge" stroke={COLORS[1]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
-                  <Line type="monotone" dataKey="short-edge" stroke={COLORS[2]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
-                  <Line type="monotone" dataKey="short-edge-long-edge" stroke={COLORS[3]} strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+                  {comparedConfigs.map(entry => (
+                    <Line
+                      key={entry.id}
+                      type="monotone"
+                      dataKey={entry.id}
+                      stroke={COLORS[CONFIGURATIONS.indexOf(entry)]}
+                      strokeWidth={entry.id === referenceConfig ? 3 : 1.5}
+                      dot={false}
+                      strokeDasharray="4 2"
+                    />
+                  ))}
                 </LineChart>
               </ChartContainer>
-              <div className="flex gap-4 mt-2 justify-center">
-                {CONFIGURATIONS.map((c, i) => (
-                  <div key={c.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <div className="w-3 h-0.5 rounded" style={{ backgroundColor: COLORS[i] }} />
-                    {c.shortName}
-                  </div>
-                ))}
-              </div>
+              <ComparisonLegend
+                referenceConfig={referenceConfig}
+                failureMode={failureMode}
+              />
               <p className="text-[11px] text-muted-foreground mt-3">
                 τ_avg,detumble denotes the average required detumbling torque.
                 τ_avg,detumble = H_remove,max / {DETUMBLING_TIME_REQUIREMENT_S.toLocaleString()} s.
@@ -582,6 +592,24 @@ export default function ComparePage() {
                   </thead>
                   <tbody>
                     {CONFIGURATIONS.map((c, i) => {
+                      const applicable = isFailureModeValid(c.id, failureMode);
+                      const isReference = c.id === referenceConfig;
+                      // Not-applicable configurations were never simulated for this mode — the
+                      // row states that explicitly instead of showing a substituted number.
+                      if (!applicable) {
+                        return (
+                          <tr key={c.id} className="border-b border-border/50" data-testid="compare-summary-row">
+                            <td className="py-2 flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[i] }} />
+                              {c.shortName}
+                            </td>
+                            <td className="text-right py-2 font-mono">{c.panelCount}</td>
+                            <td className="py-2 text-right text-muted-foreground italic" colSpan={3}>
+                              {NOT_APPLICABLE_TEXT}
+                            </td>
+                          </tr>
+                        );
+                      }
                       const frames = allSimData?.[c.id] ?? [];
                       let peakOmega = 0;
                       for (const f of frames) {
@@ -591,10 +619,15 @@ export default function ComparePage() {
                       const tauAvgReq = peakAverageRequiredDetumblingTorque(frames);
                       const lastT = frames[frames.length - 1]?.time || 0;
                       return (
-                        <tr key={c.id} className="border-b border-border/50">
+                        <tr
+                          key={c.id}
+                          data-testid="compare-summary-row"
+                          className={`border-b border-border/50 ${isReference ? 'bg-primary/5 text-foreground' : ''}`}
+                        >
                           <td className="py-2 flex items-center gap-2">
                             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[i] }} />
                             {c.shortName}
+                            {isReference && <ActiveScenarioBadge />}
                           </td>
                           <td className="text-right py-2 font-mono">{c.panelCount}</td>
                           <td className="text-right py-2 font-mono">{((peakOmega * 180) / Math.PI).toFixed(2)}</td>
@@ -611,7 +644,7 @@ export default function ComparePage() {
             </CardContent>
           </Card>
 
-          {anomaly !== 'none' && (
+          {failureMode !== 'nominal' && (
             <Card className="col-span-1 lg:col-span-2">
               <CardHeader>
                 <CardTitle>Failure Mode Impact by Configuration</CardTitle>
@@ -621,12 +654,29 @@ export default function ComparePage() {
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {failureImpactData.map(({ config, color, stuckCount, deployedCount, coupling, successFraction, progressBarColor }) => {
+                  {failureImpactData.map(({ config, color, applicable, stuckCount, deployedCount, coupling, successFraction, progressBarColor }) => {
+                    if (!applicable) {
+                      return (
+                        <div key={config.id} className="bg-muted/40 rounded-lg p-3 space-y-2 text-xs">
+                          <div className="flex items-center gap-2 font-semibold">
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                            {config.name}
+                            {config.id === referenceConfig && <ActiveScenarioBadge />}
+                          </div>
+                          <p className="text-muted-foreground italic">{NOT_APPLICABLE_TEXT}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            This configuration has two panels, so it has no distinct adjacent or
+                            opposite pair; no result is computed for it under this failure mode.
+                          </p>
+                        </div>
+                      );
+                    }
                     return (
                       <div key={config.id} className="bg-muted/40 rounded-lg p-3 space-y-2 text-xs">
                         <div className="flex items-center gap-2 font-semibold">
                           <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
                           {config.name}
+                          {config.id === referenceConfig && <ActiveScenarioBadge />}
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Stuck panels:</span>

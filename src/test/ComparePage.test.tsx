@@ -73,6 +73,7 @@ vi.mock('@/lib/physics/engine', async () => {
 });
 
 import ComparePage from '@/pages/ComparePage';
+import { NOT_APPLICABLE_TEXT, resolveStuckPanels } from '@/lib/scenario/scenarioSpec';
 
 function makeFrame(time: number) {
   return {
@@ -96,41 +97,51 @@ function selectScenario(label: string) {
   fireEvent.click(screen.getByRole('button', { name: label }));
 }
 
+/**
+ * Compare reads its scenario from the URL. `config` is the ACTIVE REFERENCE configuration: it is
+ * highlighted and decides which failure modes the picker offers, but it never removes the other
+ * configurations from the comparison.
+ */
+function renderCompare(search = '') {
+  return render(
+    <MemoryRouter initialEntries={[`/compare${search}`]}>
+      <ComparePage />
+    </MemoryRouter>,
+  );
+}
+
 describe('ComparePage failure scenario phases', () => {
   beforeEach(() => {
     runFullSimulationMock.mockReset();
     runFullSimulationMock.mockImplementation(() => [makeFrame(0), makeFrame(2), makeFrame(4)]);
   });
 
-  it('phase 1: exposes all-stuck option and passes all stuck indices to runFullSimulation', async () => {
-    render(
-      <MemoryRouter>
-        <ComparePage />
-      </MemoryRouter>,
-    );
+  it('phase 1: exposes all-stuck option and passes each config its own canonical stuck indices', async () => {
+    renderCompare();
 
-    expect(screen.getByText('All panels stuck (total failure)')).toBeInTheDocument();
+    expect(screen.getByText('All Stuck')).toBeInTheDocument();
 
-    selectScenario('All panels stuck (total failure)');
+    selectScenario('All Stuck');
 
     // Sim data is generated asynchronously (one config per event-loop turn) and a
     // superseded selection cancels its remaining runs, so total call counts vary —
     // assert on the LAST full batch instead of an exact global count.
+    // all-stuck is resolved PER CONFIGURATION now (shared resolver), so the 8-panel coupled
+    // config gets all 8 indices rather than the old hard-coded [0..5].
     await waitFor(() => {
       const latestCalls = runFullSimulationMock.mock.calls.slice(-4);
       expect(latestCalls).toHaveLength(4);
-      for (const call of latestCalls) {
-        expect(call[3]).toEqual([0, 1, 2, 3, 4, 5]);
+      for (const [index, call] of latestCalls.entries()) {
+        const config = CONFIGURATIONS[index];
+        expect(call[0]).toBe(config.id);
+        expect(call[3]).toEqual(resolveStuckPanels(config.id, 'all-stuck'));
       }
     });
+    expect(runFullSimulationMock.mock.calls.at(-1)?.[3]).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 
   it('charts τ_avg,detumble vs time for all four configurations, defined and annotated', async () => {
-    const { container } = render(
-      <MemoryRouter>
-        <ComparePage />
-      </MemoryRouter>,
-    );
+    const { container } = renderCompare();
 
     // The chart, under the exact compact-symbol title, alongside the retained ω chart.
     await waitFor(() => {
@@ -179,11 +190,7 @@ describe('ComparePage failure scenario phases', () => {
   });
 
   it('material selector change regenerates all runs with the new panelMass (no stale results)', async () => {
-    const { container } = render(
-      <MemoryRouter>
-        <ComparePage />
-      </MemoryRouter>,
-    );
+    const { container } = renderCompare();
 
     // Initial batch runs with the default FR4 mass (0.032 kg).
     await waitFor(() => {
@@ -210,16 +217,12 @@ describe('ComparePage failure scenario phases', () => {
   });
 
   it.each([
-    ['One panel stuck', 'one-stuck', 1],
-    ['Two panels (opposite)', 'two-opposite', 2],
-    ['Two panels (adjacent)', 'two-adjacent', 2],
-    ['All panels stuck (total failure)', 'all-stuck', 6],
-  ])('phase 2: renders warning banner and per-config stuck counts for %s', async (optionLabel, scenarioKey, stuckLength) => {
-    render(
-      <MemoryRouter>
-        <ComparePage />
-      </MemoryRouter>,
-    );
+    ['One panel stuck', '1 Panel Stuck', 'one-stuck', ''],
+    ['Two panels (opposite)', '2 Opposite', 'two-opposite', '?config=short-edge'],
+    ['Two panels (adjacent)', '2 Adjacent', 'two-adjacent', '?config=short-edge'],
+    ['All panels stuck', 'All Stuck', 'all-stuck', ''],
+  ])('phase 2: renders warning banner and per-config stuck counts for %s', async (_name, optionLabel, scenarioKey, search) => {
+    renderCompare(search);
 
     selectScenario(optionLabel);
 
@@ -227,33 +230,31 @@ describe('ComparePage failure scenario phases', () => {
     expect(scenarioMatches.length).toBeGreaterThan(0);
 
     for (const config of CONFIGURATIONS) {
-      const expected = `${config.shortName}: ${Math.min(stuckLength, config.panelCount)} stuck`;
+      // Two-panel modes have no valid long-edge case: the badge says so rather than
+      // reporting a substituted stuck count.
+      const applicable =
+        !['two-opposite', 'two-adjacent'].includes(scenarioKey) || config.id !== 'long-edge';
+      const expected = applicable
+        ? `${config.shortName}: ${resolveStuckPanels(config.id, scenarioKey as 'one-stuck').length} stuck`
+        : `${config.shortName}: ${NOT_APPLICABLE_TEXT}`;
       expect(screen.getByText(expected)).toBeInTheDocument();
     }
   });
 
   it('phase 3: displays the FAILURE MODE badge on angular velocity chart header only during anomalies', () => {
-    render(
-      <MemoryRouter>
-        <ComparePage />
-      </MemoryRouter>,
-    );
+    renderCompare();
 
     expect(screen.queryByText('FAILURE MODE')).not.toBeInTheDocument();
 
-    selectScenario('One panel stuck');
+    selectScenario('1 Panel Stuck');
 
     expect(screen.getByText('FAILURE MODE')).toBeInTheDocument();
   });
 
   it('phase 4: renders the impact summary with per-config stuck, deployed, coupling, and progress severity', () => {
-    const { container } = render(
-      <MemoryRouter>
-        <ComparePage />
-      </MemoryRouter>,
-    );
+    const { container } = renderCompare();
 
-    selectScenario('One panel stuck');
+    selectScenario('1 Panel Stuck');
 
     expect(screen.getByText('Failure Mode Impact by Configuration')).toBeInTheDocument();
     expect(screen.getAllByText(SCENARIO_TEXT['one-stuck']).length).toBeGreaterThan(0);
@@ -295,4 +296,100 @@ describe('ComparePage failure scenario phases', () => {
     expect(screen.getAllByText('Angular momentum coupling:').length).toBe(4);
   });
 
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Reference configuration + two-panel topology validity.
+//
+//  Compare always shows every configuration the active failure mode applies to. The scenario's
+//  `config` is the ACTIVE REFERENCE only — it highlights one configuration and decides which
+//  failure modes are offered; it never filters the comparison set.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ComparePage reference configuration and topology validity', () => {
+  beforeEach(() => {
+    runFullSimulationMock.mockReset();
+    runFullSimulationMock.mockImplementation(() => [makeFrame(0), makeFrame(2), makeFrame(4)]);
+  });
+
+  it.each([
+    ['nominal', 'Nominal'],
+    ['one-stuck', '1 Panel Stuck'],
+    ['all-stuck', 'All Stuck'],
+  ])('renders all four configurations under %s', async (_mode, optionLabel) => {
+    renderCompare();
+    selectScenario(optionLabel);
+
+    await waitFor(() => {
+      const latest = runFullSimulationMock.mock.calls.slice(-4);
+      expect(latest.map(call => call[0])).toEqual(CONFIGURATIONS.map(c => c.id));
+    });
+
+    const rows = screen.getAllByTestId('compare-summary-row');
+    expect(rows).toHaveLength(4);
+    expect(screen.queryByText(NOT_APPLICABLE_TEXT)).not.toBeInTheDocument();
+  });
+
+  it('visibly highlights the configuration selected on Simulation', () => {
+    renderCompare('?config=short-edge');
+
+    const rows = screen.getAllByTestId('compare-summary-row');
+    const shortEdgeRow = rows.find(row => row.textContent?.includes('Short-edge'))!;
+    const longEdgeRow = rows.find(row => row.textContent?.startsWith('Long-edge'))!;
+
+    expect(within(shortEdgeRow).getByText('Active scenario')).toBeInTheDocument();
+    expect(within(longEdgeRow).queryByText('Active scenario')).not.toBeInTheDocument();
+    // The marker is used consistently — chart legends carry it too.
+    expect(screen.getAllByText('Active scenario').length).toBeGreaterThan(1);
+  });
+
+  it.each([
+    ['two-adjacent', '2 Adjacent'],
+    ['two-opposite', '2 Opposite'],
+  ])('excludes long-edge numerically and explains why under %s', async (_mode, optionLabel) => {
+    renderCompare('?config=short-edge');
+    selectScenario(optionLabel);
+
+    // long-edge is never simulated for a two-panel mode — no fabricated result exists.
+    await waitFor(() => {
+      const latest = runFullSimulationMock.mock.calls.slice(-3);
+      expect(latest.map(call => call[0])).toEqual([
+        'double-long-edge',
+        'short-edge',
+        'short-edge-long-edge',
+      ]);
+    });
+    expect(
+      runFullSimulationMock.mock.calls.filter(call => call[0] === 'long-edge'),
+    ).toHaveLength(0);
+
+    // …and it is still listed, with an explicit not-applicable explanation rather than a
+    // substituted failure mode or a blank cell.
+    const rows = screen.getAllByTestId('compare-summary-row');
+    expect(rows).toHaveLength(4);
+    const longEdgeRow = rows.find(row => row.textContent?.startsWith('Long-edge'))!;
+    expect(within(longEdgeRow).getByText(NOT_APPLICABLE_TEXT)).toBeInTheDocument();
+    expect(screen.getAllByText(NOT_APPLICABLE_TEXT).length).toBeGreaterThan(1);
+  });
+
+  it('changing the reference configuration does not change the other comparison curves', async () => {
+    const { unmount } = renderCompare('?config=long-edge&failure=one-stuck');
+
+    await waitFor(() => {
+      expect(runFullSimulationMock.mock.calls.slice(-4)).toHaveLength(4);
+    });
+    const firstBatch = runFullSimulationMock.mock.calls.slice(-4).map(call => [call[0], call[3]]);
+    unmount();
+
+    runFullSimulationMock.mockClear();
+    renderCompare('?config=short-edge&failure=one-stuck');
+
+    await waitFor(() => {
+      expect(runFullSimulationMock.mock.calls.slice(-4)).toHaveLength(4);
+    });
+    const secondBatch = runFullSimulationMock.mock.calls.slice(-4).map(call => [call[0], call[3]]);
+
+    // Identical configs, identical stuck indices — the reference config is presentation only.
+    expect(secondBatch).toEqual(firstBatch);
+  });
 });

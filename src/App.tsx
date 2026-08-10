@@ -12,6 +12,21 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
+/**
+ * The route table, separated from the router itself so tests can mount the real routes inside a
+ * MemoryRouter and exercise navigation between pages (the scenario is carried in the URL, so
+ * cross-page behaviour is only observable with the actual routes in place).
+ */
+export const AppRoutes = () => (
+  <Routes>
+    <Route path="/" element={<LandingPage />} />
+    <Route path="/simulate" element={<SimulationPage />} />
+    <Route path="/compare" element={<ComparePage />} />
+    <Route path="/report" element={<ReportPage />} />
+    <Route path="*" element={<NotFound />} />
+  </Routes>
+);
+
 const App = () => (
   <ThemeProvider attribute="class" defaultTheme="system">
     <QueryClientProvider client={queryClient}>
@@ -20,15 +35,9 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <div>
-            <Routes>
-            <Route path="/" element={<LandingPage />} />
-            <Route path="/simulate" element={<SimulationPage />} />
-            <Route path="/compare" element={<ComparePage />} />
-            <Route path="/report" element={<ReportPage />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </div>
-      </BrowserRouter>
+            <AppRoutes />
+          </div>
+        </BrowserRouter>
       </TooltipProvider>
     </QueryClientProvider>
   </ThemeProvider>

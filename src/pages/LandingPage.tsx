@@ -3,9 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { CONFIGURATIONS, MATERIAL_PRESETS, type MaterialPresetKey } from '@/lib/physics/types';
+import { CONFIGURATIONS, MATERIAL_PRESETS, type ConfigType, type MaterialPresetKey } from '@/lib/physics/types';
 import { ArrowRight, Orbit, BarChart3, Zap } from 'lucide-react';
-import ThemeToggle from '@/components/ui/theme-toggle';
+import SiteHeader from '@/components/SiteHeader';
+import { scenarioSearch } from '@/hooks/useScenario';
+import { DEFAULT_SCENARIO } from '@/lib/scenario/scenarioSpec';
 
 const CONFIG_COLORS = ['hsl(210, 100%, 55%)', 'hsl(168, 70%, 45%)', 'hsl(35, 95%, 55%)', 'hsl(280, 65%, 55%)'];
 const CONFIG_ICONS = ['◧', '◫', '⊞', '⊠'];
@@ -17,36 +19,22 @@ export default function LandingPage() {
     () => MATERIAL_PRESETS.find(preset => preset.key === selectedMaterial)!,
     [selectedMaterial],
   );
-  const handleSimNavigation = (path: string) => {
-    navigate(path, { state: { panelMass: activeMaterial.panelMass } });
+  // The material chosen here starts the scenario. It travels as a URL parameter, not router
+  // state — so it survives a refresh, a copied link, and every later navigation.
+  const scenario = useMemo(
+    () => ({ ...DEFAULT_SCENARIO, material: selectedMaterial }),
+    [selectedMaterial],
+  );
+  const handleSimNavigation = (path: string, config?: ConfigType) => {
+    navigate({
+      pathname: path,
+      search: scenarioSearch(config ? { ...scenario, config } : scenario),
+    });
   };
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Nav */}
-      <header className="border-b border-border px-6 py-3 flex items-center justify-between">
-        <div className="font-semibold text-lg tracking-tight">
-          <span className="text-primary">CubeSat</span> Deploy Sim
-        </div>
-        <div className="flex items-center gap-4">
-          <nav className="flex gap-4 text-sm text-muted-foreground">
-            <a href="/" className="text-foreground">Overview</a>
-            <a
-              href="/simulate"
-              className="hover:text-foreground transition-colors"
-              onClick={event => {
-                event.preventDefault();
-                handleSimNavigation('/simulate');
-              }}
-            >
-              Simulation
-            </a>
-            <a href="/compare" className="hover:text-foreground transition-colors">Compare</a>
-            <a href="/report" className="hover:text-foreground transition-colors">Report</a>
-          </nav>
-          <ThemeToggle />
-        </div>
-      </header>
+      <SiteHeader scenario={scenario} active="/" />
 
       {/* Hero */}
       <section className="max-w-5xl mx-auto px-6 pt-20 pb-16 text-center">
@@ -109,7 +97,7 @@ export default function LandingPage() {
             <Button
               size="lg"
               variant="outline"
-              onClick={() => navigate('/compare', { state: { panelMass: activeMaterial.panelMass } })}
+              onClick={() => handleSimNavigation('/compare')}
               className="gap-2"
             >
               <BarChart3 className="h-4 w-4" /> Compare All
@@ -130,7 +118,7 @@ export default function LandingPage() {
             >
               <Card
                 className="cursor-pointer hover:border-primary/40 transition-all group"
-                onClick={() => handleSimNavigation(`/simulate?config=${config.id}`)}
+                onClick={() => handleSimNavigation('/simulate', config.id)}
               >
                 <CardContent className="p-5">
                   <div className="flex items-start gap-4">
