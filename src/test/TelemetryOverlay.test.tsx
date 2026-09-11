@@ -53,3 +53,20 @@ describe('TelemetryOverlay detumbling readout', () => {
     expect(text).not.toMatch(/angular momentum|mJ|E_detumble|F_detumble|force required/i);
   });
 });
+
+describe('TelemetryOverlay contact torque peak', () => {
+  it('shows the peak contact torque passed in, not a recomputed live value', () => {
+    render(
+      <TelemetryOverlay
+        state={createInitialState('long-edge')}
+        detumblingTorqueNm={0}
+        peakDetumblingTorqueNm={0}
+        peakContactTorqueNm={12}
+        delayMagnitude={0}
+        delayUnit="ms"
+        materialLabel="FR4 (32 g)"
+      />,
+    );
+    expect(screen.getByText('12.0 N·m')).toBeInTheDocument();
+  });
+});

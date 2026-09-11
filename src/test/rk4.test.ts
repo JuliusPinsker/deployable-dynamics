@@ -197,7 +197,7 @@ describe('existing simulation regression with RK4 body integrator', () => {
     const stopAngle = DEFAULT_PARAMS.hinge.stopAngle;
     const angleSeries = frames.map(f => f.panelAngles[0]);
 
-    // Bounded overshoot: the calibrated lightly damped hinge (ζ ≈ 0.30) arrives
+    // Bounded overshoot: the calibrated underdamped hinge (ζ ≈ 0.80) arrives
     // at the overdamped mechanical stop with momentum; measured penetration ≈ 0.07°.
     expect(Math.max(...angleSeries)).toBeLessThanOrEqual(stopAngle + 0.005);
 

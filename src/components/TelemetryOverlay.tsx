@@ -8,6 +8,9 @@ interface TelemetryOverlayProps {
   detumblingTorqueNm?: number;
   /** Peak τ_avg,detumble reached so far this run (N·m) — stays elevated through the coast. */
   peakDetumblingTorqueNm?: number;
+  /** Peak total contact torque reached so far this run (N·m), maximised across physics
+   *  substeps so brief mechanical-stop impacts aren't lost between rendered frames. */
+  peakContactTorqueNm?: number;
   delayMagnitude: number;
   delayUnit: 'ns' | 'µs' | 'ms';
   materialLabel: string;
@@ -21,11 +24,12 @@ export default function TelemetryOverlay({
   state,
   detumblingTorqueNm,
   peakDetumblingTorqueNm,
+  peakContactTorqueNm,
   delayMagnitude,
   delayUnit,
   materialLabel,
 }: TelemetryOverlayProps) {
-  const maxContact = Math.max(...state.panels.map(p => p.contactForce), 0);
+  const maxContact = Math.max(peakContactTorqueNm ?? 0, 0);
   const avgAngle = state.panels.reduce((s, p) => s + p.angle, 0) / state.panels.length;
   const deployPct = Math.min(100, (avgAngle / (Math.PI / 2)) * 100);
   // Live value still feeds the peak as a floor (so the reading never lags below the current
@@ -69,8 +73,8 @@ export default function TelemetryOverlay({
       </div>
 
       <div className="border-t border-border pt-1 flex justify-between">
-        <span className="text-muted-foreground">Contact F</span>
-        <span className={maxContact > 10 ? 'text-destructive' : ''}>{formatNum(maxContact, 1)} N</span>
+        <span className="text-muted-foreground">Contact τ</span>
+        <span className={maxContact > 1.0 ? 'text-destructive' : ''}>{formatNum(maxContact, 1)} N·m</span>
       </div>
 
       <div className="border-t border-border pt-1">

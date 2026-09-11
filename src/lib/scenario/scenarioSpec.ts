@@ -61,7 +61,7 @@ export const DEFAULT_SCENARIO: ScenarioSpec = {
 export const FAILURE_MODE_LABELS: Record<ScenarioFailureMode, { label: string; sub: string }> = {
   nominal: { label: 'Nominal', sub: 'All panels free' },
   'one-stuck': { label: '1 Panel Stuck', sub: 'Asymmetric inertia' },
-  'two-adjacent': { label: '2 Adjacent', sub: 'CoM offset + torque bias' },
+  'two-adjacent': { label: '2 Adjacent', sub: 'asymmetric release' },
   'two-opposite': { label: '2 Opposite', sub: 'Symmetric torque imbalance' },
   'all-stuck': { label: 'All Stuck', sub: 'Deployment aborted' },
 };
@@ -79,7 +79,7 @@ export const FAILURE_MODE_REPORT_LABELS: Record<FailureModeKey, string> = {
 };
 
 /** Shown wherever a configuration has no physically valid result for the active failure mode. */
-export const NOT_APPLICABLE_TEXT = 'Not applicable — two-panel topology';
+export const NOT_APPLICABLE_TEXT = 'Not applicable — two-panel configuration';
 
 /**
  * The report evaluates a 42-scenario failure-mode sweep across four panel configurations
@@ -103,6 +103,16 @@ export const CONFIG_FAILURE_MODES: Record<ConfigType, FailureModeKey[]> = {
  * In the coupled configuration, the two-panel failure cases are applied to the unchanged
  * long-edge sub-chain, panels 0-3. The short-edge subassembly is included in the
  * all-panels-stuck case. (Not present for `long-edge` — see CONFIG_FAILURE_MODES above.)
+ *
+ * `opposite` selects two stage-one hinges on opposite sides of the body, one from each
+ * deployment assembly. `adjacent` selects two hinges within the same assembly: for
+ * short-edge this is two panels on neighbouring faces; for staged configurations
+ * (double-long-edge, coupled) it is a stage-one parent together with its own stage-two
+ * child, so the opposing assembly deploys freely. The two modes therefore differ in kind,
+ * not only in position, and this is intentional.
+ *
+ * `long-edge` has no entry here because its two panels form a single pair, so the
+ * adjacent and opposite cases coincide.
  */
 export const TWO_PANEL_TOPOLOGY: Partial<Record<ConfigType, { adjacent: number[]; opposite: number[] }>> = {
   // double-long-edge: panel 0 (+Y stage-1 root) and panel 1 (-Y stage-1 root) are the

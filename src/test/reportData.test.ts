@@ -22,9 +22,9 @@ import { DEFAULT_PARAMS, Vector3 } from '../lib/physics/types';
 //
 //  The body starts from rest and momentum is conserved, so its angular velocity
 //  decays back to ~0 once panels stop moving. `computeSingleRow` must therefore
-//  report `w_final` from the PEAK-ω frame, not the settled last frame — and the reported
-//  average required detumbling torque from the INDEPENDENT trajectory maximum of the
-//  internal angular momentum, divided by the assumed 5400 s allocation.
+//  report peakOmegaDegPerS from the PEAK-ω frame, not the settled last frame — and
+//  the reported average required detumbling torque from the INDEPENDENT trajectory
+//  maximum of the internal angular momentum, divided by the assumed 5400 s allocation.
 //
 //  The test asserts against the REAL computation path via `runScenarioTrajectory`
 //  (same material-sourced params, stuck resolution, and horizon that computeSingleRow
@@ -37,11 +37,8 @@ describe('computeSingleRow — peak-frame reporting', () => {
 
     // Asymmetric deployment (one panel stuck) induces a genuine body-rate transient.
     // Under the OLD last-frame reading these would be ~0 — this is the core regression guard.
-    expect(row.finalOmegaDegPerS).toBeGreaterThan(0);
+    expect(row.peakOmegaDegPerS).toBeGreaterThan(0);
     expect(row.averageRequiredDetumblingTorqueNm).toBeGreaterThan(0);
-
-    // After the fix, w_final is taken from the same peak frame as w_peak.
-    expect(row.finalOmegaDegPerS).toBeCloseTo(row.peakOmegaDegPerS, 10);
 
     // Calculated deployment time t₉₀ is a dynamics outcome (first frame at/after
     // 90% of the final panel angle, 50 ms frame cadence). Under the CALIBRATED
@@ -59,7 +56,7 @@ describe('computeSingleRow — peak-frame reporting', () => {
     const last = trajectory.at(-1)!;
     const lastOmegaDeg = MathUtils.radToDeg(last.angularVelocity.length());
 
-    expect(lastOmegaDeg).toBeLessThan(row.finalOmegaDegPerS * 0.2);
+    expect(lastOmegaDeg).toBeLessThan(row.peakOmegaDegPerS * 0.2);
   });
 
   it('derives the reported torque from the trajectory MAXIMUM angular momentum', () => {
@@ -76,9 +73,8 @@ describe('computeSingleRow — peak-frame reporting', () => {
     );
   });
 
-  it('keeps w_final and the required torque at ~0 for all-stuck (physically correct)', () => {
+  it('keeps peak ω and the required torque at ~0 for all-stuck (physically correct)', () => {
     const row = computeSingleRow('long-edge', 'all-stuck', 'fr4');
-    expect(row.finalOmegaDegPerS).toBeCloseTo(0, 6);
     expect(row.averageRequiredDetumblingTorqueNm).toBeCloseTo(0, 9);
     expect(row.peakOmegaDegPerS).toBeCloseTo(0, 6);
   });

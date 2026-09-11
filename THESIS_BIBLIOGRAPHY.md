@@ -224,12 +224,18 @@ E₀ = 206 GPa  [at reference temperature]
 
 ---
 
-### 2.6 Bistable Hinge Mechanics
+### 2.6 Bistable Hinge Mechanics (not part of the reported model)
 
-**Feature:** Model snap-through behavior and energy barriers in bistable deployment mechanisms
-- **Code:** `src/test/bistableHinge.test.ts`
+No bistable tape-spring model exists in the implementation used for the thesis results. The
+hinge model reported in this thesis is the single torsion spring-damper (with Coulomb friction
+and a mechanical stop) described in Section 3.4/§4.1.3, not a bistable snap-through mechanism.
 
-**Supporting References:**
+`src/test/bistableHinge.test.ts` still exists in the repository but is unused code — it is not
+exercised by `runFullSimulation`, `computeReportData`, or any other path that produced the
+thesis results, and is retained only as dead test scaffolding from an earlier exploration.
+
+The following references were evaluated for a bistable/snap-through extension but were not
+adopted:
 1. SEFFEN, Keith A.; PELLEGRINO, Sergio. "Deployment of Eggbox Corrugated Panels". Proceedings of the Royal Society A. 1999.
    - **Citation:** (Seffen & Pellegrino, 1999)
    - Bi-stable mechanism design and snap-through transitions
@@ -267,7 +273,7 @@ This section compiles all features and their scientific foundations that make up
   - HUGHES, Peter C. (1986) — Angular momentum conservation with constraints
   - WERTZ, James R. (1978) — Attitude dynamics under failure conditions
 
-### 3.3 Center of Mass Computation & Visualization
+### 3.3 Center of Mass Computation & Visualization (display-only, not in the EOM)
 
 **Feature:** Add CoM computation as a new export in engine.ts and display in 3D viewer
 - **Code:** `src/lib/physics/engine.ts` (computeTotalCoM function)
@@ -276,15 +282,14 @@ This section compiles all features and their scientific foundations that make up
 - **References:**
   - HUGHES, Peter C. (1986) — §3.2: Composite body center of mass
     - **Equation:** r_c = (Σ m_i r_i) / M_total
-  - Impact on gravity gradient torque bias:
-    - Off-axis CoM creates additional disturbance torque
-    - Critical for LEO mission analysis
 
 - **Physics:**
   ```
   r_c_composite = (m_body · r_body + Σm_panel_i · r_panel_i) / M_total
-  τ_bias = τ_gg(r_c_offset)  [if CoM not at nominal position]
   ```
+  This CoM offset is a diagnostic/visualization quantity only. Per the thesis limitations, it
+  does not feed back into the equations of motion — no CoM-offset torque term is computed or
+  applied, and it has no effect on the reported dynamics.
 
 ### 3.4 Detumbling Requirement Telemetry (Angular Momentum and Average Torque)
 
@@ -339,10 +344,8 @@ plus the derived average ADCS sizing torque.
 **Feature:** Material picker (3 presets → panelMass) on LandingPage
 - **Code:** `src/pages/LandingPage.tsx`, `src/lib/physics/constants.ts`
 
-- **Material Presets:**
-  1. **Lightweight (0.2 kg)** — Composite/mylar lightweight panels
-  2. **Standard (0.3 kg)** — CFRP/Al honeycomb (3U CubeSat nominal)
-  3. **Reinforced (0.4 kg)** — Enhanced structural panels
+- **Material Presets:** panel mass range 0.020–0.050 kg, FR4 default 0.032 kg
+  (`DEFAULT_PARAMS.panelMass`, see `step-6-material-picker-implementation.md`)
 
 - **References:**
   - ESA ECSS-E-HB-32-20A (2011) — Material densities and properties
@@ -573,7 +576,7 @@ THORNTON, W. H.; KIM, H. "Flexible appendage dynamics". AIAA Journal of Guidance
 | Detumbling requirement (H, tau_avg,req) | Schaub and Junkins (§4.1.3) | Hughes (1986) | `engine.ts`, `reportData.ts` |
 | Modal dynamics | Craig & Bampton (1968) | Thornton & Kim (1993), Banerjee & Williams (1992) | `flexModel.ts` |
 | Thermal stiffness | Gilmore (2002) | Wertz & Larson (1999), ESA (2011) | `thermalModel.ts` |
-| Bistable hinges | Seffen & Pellegrino (1999) | Mallikarachchi & Pellegrino (2011) | `bistableHinge.test.ts` |
+| Bistable hinges (not part of reported model) | — | — | `bistableHinge.test.ts` (unused) |
 | Center of mass | Hughes (1986) | — | `engine.ts` |
 | CoM visualization | Hughes (1986) | — | `CubeSatViewer.tsx` |
 | Numerical integration | Dormand & Prince (1980) | — | `engine.ts`, `flexModel.ts` |
@@ -582,6 +585,6 @@ THORNTON, W. H.; KIM, H. "Flexible appendage dynamics". AIAA Journal of Guidance
 ---
 
 **Document Version:** 2.0 (Feature-Based Organization with DIN ISO 690 Citations)  
-**Last Updated:** 2026-05-15  
+**Last Updated:** 2026-08-04  
 **Citation Format:** DIN ISO 690 (Author-Year System)  
 **Project:** deployable-dynamics — CubeSat Solar Panel Deployment & Detumbling Simulator

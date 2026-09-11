@@ -42,7 +42,7 @@ function makeState(panelCount: number): SpacecraftState {
       stuck: false,
       stuckAngle: 0,
       deployed: false,
-      contactForce: 0,
+      contactTorque: 0,
     })),
   };
 }

@@ -129,7 +129,7 @@ describe('resolveStuckPanels — canonical topology for every page', () => {
     expect(() => resolveStuckPanels('long-edge', 'two-adjacent')).toThrow(
       /not applicable to configuration long-edge/,
     );
-    expect(NOT_APPLICABLE_TEXT).toMatch(/two-panel topology/);
+    expect(NOT_APPLICABLE_TEXT).toMatch(/two-panel configuration/);
   });
 });
 

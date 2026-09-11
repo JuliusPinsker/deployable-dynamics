@@ -324,7 +324,7 @@ describe('srpTorque', () => {
         stuck: true, // And stuck stowed
         stuckAngle: 0,
         deployed: false,
-        contactForce: 0,
+        contactTorque: 0,
       },
     ];
 
@@ -370,7 +370,7 @@ describe('srpTorque', () => {
         stuck: false,
         stuckAngle: 0,
         deployed: true,
-        contactForce: 0,
+        contactTorque: 0,
       },
     ];
 

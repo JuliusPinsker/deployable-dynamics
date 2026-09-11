@@ -42,7 +42,7 @@ export interface PanelState {
   stuck: boolean;            // failure mode
   stuckAngle: number;        // angle where stuck
   deployed: boolean;         // has reached stop angle
-  contactForce: number;      // N at mechanical stop
+  contactTorque: number;     // N·m at mechanical stop
   /**
    * Net hinge torque (N·m) applied to this panel on the last step — spring/bistable
    * + preload − damping − friction − stop. Telemetry: the equal-and-opposite body
@@ -140,7 +140,7 @@ export const CONFIGURATIONS: ConfigInfo[] = [
   },
   {
     id: 'short-edge-long-edge',
-    name: 'Short-edge + Long-edge Coupled',
+    name: 'Coupled',
     shortName: 'Coupled',
     panelCount: 8,
     description: 'Eight panels in four assemblies combining both attachment types. Most complex with highest tumbling risk.',

@@ -49,7 +49,7 @@ type FailureAnomalyType = Exclude<ScenarioFailureMode, 'nominal'>;
 const FAILURE_SCENARIO_TEXT: Record<FailureAnomalyType, string> = {
   'one-stuck': 'Panel Failure: 1 panel jammed at 0° — asymmetric inertia disturbance',
   'two-opposite': 'Panel Failure: 2 opposite panels stuck — symmetric torque imbalance',
-  'two-adjacent': 'Panel Failure: 2 adjacent panels stuck — net CoM offset + torque bias',
+  'two-adjacent': 'Panel Failure: 2 adjacent panels stuck — asymmetric release',
   'all-stuck': 'Catastrophic Failure: All panels locked — deployment aborted, CubeSat remains in tumble state',
 };
 
@@ -275,23 +275,6 @@ export default function ComparePage() {
     return data;
   }, [allSimData, comparedIds]);
 
-  // Peak acceleration bar chart — only configurations the active failure mode applies to.
-  const peakAccelData = useMemo(() => {
-    return comparedConfigs.map(entry => {
-      const frames = allSimData?.[entry.id] ?? [];
-      let peakAccel = 0;
-      for (const f of frames) {
-        const total = Math.sqrt(f.angularAcceleration.x ** 2 + f.angularAcceleration.y ** 2 + f.angularAcceleration.z ** 2);
-        peakAccel = Math.max(peakAccel, total);
-      }
-      return {
-        name: entry.shortName,
-        value: Number(((peakAccel * 180) / Math.PI).toFixed(2)),
-        fill: COLORS[CONFIGURATIONS.indexOf(entry)],
-      };
-    });
-  }, [allSimData, comparedConfigs]);
-
   // Deployment time
   const deployTimeData = useMemo(() => {
     return comparedConfigs.map(entry => {
@@ -409,14 +392,6 @@ export default function ComparePage() {
             onChange={next => setScenario({ delaySeconds: next })}
             className="space-y-1.5"
           />
-          {/* Why δt matters here. The quantisation statement lives in the shared δt control
-              (one statement per page — the e2e caption check asserts a single match). */}
-          <p className="text-[11px] text-muted-foreground max-w-md">
-            δt staggers burn-wire release (panel i fires at i·δt): at δt = 0 the panel-pair
-            reactions cancel and the body stays at rest; at δt &gt; 0 the symmetry breaks and the
-            body gains angular velocity. Deployment is physics-driven (torsional spring hinge),
-            and all configurations are compared under the same δt.
-          </p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -524,31 +499,12 @@ export default function ComparePage() {
             </CardContent>
           </Card>
 
-          {/* Peak Angular Acceleration */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Peak Angular Acceleration (°/s²)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={chartConfig} className="h-[250px]">
-                <BarChart data={peakAccelData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="value" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-
           {/* Deployment settle time */}
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Deployment Settle Time (s)</CardTitle>
               <p className="text-[11px] text-muted-foreground">
-                Time until all panel motion settles (stop capture) — not the report&apos;s
-                t_deploy,90 metric (first reach of 90% of the deployed angle).
+                Time until all panel motion settles (stop capture).
               </p>
             </CardHeader>
             <CardContent>
@@ -604,7 +560,7 @@ export default function ComparePage() {
                               {c.shortName}
                             </td>
                             <td className="text-right py-2 font-mono">{c.panelCount}</td>
-                            <td className="py-2 text-right text-muted-foreground italic" colSpan={3}>
+                            <td className="py-2 text-right text-muted-foreground italic" colSpan={4}>
                               {NOT_APPLICABLE_TEXT}
                             </td>
                           </tr>
@@ -687,7 +643,7 @@ export default function ComparePage() {
                           <span>{deployedCount}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Angular momentum coupling:</span>
+                          <span className="text-muted-foreground">Stuck-panel severity:</span>
                           <span className="font-semibold">{coupling}</span>
                         </div>
                         <div>

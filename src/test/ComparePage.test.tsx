@@ -81,7 +81,7 @@ function makeFrame(time: number) {
     panelAngles: [0, 0, 0, 0, 0, 0],
     angularVelocity: { x: 0.05, y: 0.03, z: 0.02 },
     angularAcceleration: { x: 0.02, y: 0.01, z: 0.01 },
-    totalContactForce: 4.2,
+    totalContactTorque: 4.2,
     detumbleAngularMomentum: 1.23e-3,
   };
 }
@@ -89,7 +89,7 @@ function makeFrame(time: number) {
 const SCENARIO_TEXT: Record<string, string> = {
   'one-stuck': 'Panel Failure: 1 panel jammed at 0\u00b0 \u2014 asymmetric inertia disturbance',
   'two-opposite': 'Panel Failure: 2 opposite panels stuck \u2014 symmetric torque imbalance',
-  'two-adjacent': 'Panel Failure: 2 adjacent panels stuck \u2014 net CoM offset + torque bias',
+  'two-adjacent': 'Panel Failure: 2 adjacent panels stuck \u2014 asymmetric release',
   'all-stuck': 'Catastrophic Failure: All panels locked \u2014 deployment aborted, CubeSat remains in tumble state',
 };
 
@@ -278,11 +278,20 @@ describe('ComparePage failure scenario phases', () => {
     for (const config of CONFIGURATIONS) {
       const stuckCount = Math.min(1, config.panelCount);
       const deployedCount = config.panelCount - stuckCount;
-      const configHeader = screen.getByText(config.name);
-      let configCard: HTMLElement | null = configHeader as HTMLElement;
-
-      while (configCard && !configCard.className.includes('bg-muted/40')) {
-        configCard = configCard.parentElement;
+      // config.name can collide with unrelated same-text elements elsewhere on the page
+      // (e.g. a "Reference: <name>" control), so search every match for the one that's
+      // actually inside a failure-impact card rather than assuming a single result.
+      const configHeaders = screen.getAllByText(config.name);
+      let configCard: HTMLElement | null = null;
+      for (const header of configHeaders) {
+        let candidate: HTMLElement | null = header as HTMLElement;
+        while (candidate && !candidate.className.includes('bg-muted/40')) {
+          candidate = candidate.parentElement;
+        }
+        if (candidate) {
+          configCard = candidate;
+          break;
+        }
       }
 
       expect(configCard).not.toBeNull();
@@ -293,7 +302,7 @@ describe('ComparePage failure scenario phases', () => {
       expect(cardScope.getByText(String(deployedCount))).toBeInTheDocument();
     }
 
-    expect(screen.getAllByText('Angular momentum coupling:').length).toBe(4);
+    expect(screen.getAllByText('Stuck-panel severity:').length).toBe(4);
   });
 
 });

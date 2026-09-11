@@ -50,7 +50,7 @@ const FAILURE_BANNER_TONE: Record<Exclude<ScenarioFailureMode, 'nominal'>, strin
 const FAILURE_BANNER_TEXT: Record<Exclude<ScenarioFailureMode, 'nominal'>, string> = {
   'one-stuck': '1 Panel Stuck — Asymmetric Inertia',
   'two-opposite': '2 Panels Stuck — Symmetric Imbalance',
-  'two-adjacent': '2 Adjacent Stuck — CoM Offset',
+  'two-adjacent': '2 Adjacent Stuck — Asymmetric release',
   'all-stuck': 'ALL PANELS STUCK — Deployment Aborted',
 };
 
@@ -118,6 +118,11 @@ export default function SimulationPage() {
   // from looking like the reading "reset" to zero.
   const peakRef = useRef<OmegaPeak>(EMPTY_OMEGA_PEAK);
 
+  // Peak total contact torque reached so far this run (N·m), maximised across physics
+  // substeps — a mechanical-stop impact can last only a few 1/1200 s substeps within
+  // one rendered frame, so reading contactTorque off the last substep alone misses it.
+  const contactPeakRef = useRef(0);
+
   const configRef = useRef(config);
   configRef.current = config;
 
@@ -152,6 +157,8 @@ export default function SimulationPage() {
         currentParams,
       );
       peakRef.current = accumulateOmegaPeak(peakRef.current, omegaRad, hInst);
+      const substepContact = Math.max(...newState.panels.map(p => p.contactTorque), 0);
+      contactPeakRef.current = Math.max(contactPeakRef.current, substepContact);
     }
     // The composite CoM is a rendering concern (viewer rotates about it) —
     // compute it once per DISPLAYED frame, not per physics substep.
@@ -207,6 +214,7 @@ export default function SimulationPage() {
     ) => {
       cancelAnimationFrame(rafRef.current);
       peakRef.current = EMPTY_OMEGA_PEAK;
+      contactPeakRef.current = 0;
       const base = createInitialState(nextConfig, degToRadVec(nextTumbleDeg));
       setState(applyFailureModeToState(base, nextFailureMode, nextConfig));
     },
@@ -290,6 +298,7 @@ export default function SimulationPage() {
             peakDetumblingTorqueNm={computeAverageRequiredDetumblingTorque(
               peakRef.current.peakDetumbleAngularMomentum,
             )}
+            peakContactTorqueNm={contactPeakRef.current}
             delayMagnitude={delayDisplay.magnitude}
             delayUnit={delayDisplay.unit}
             materialLabel={`${activeMaterial.label} (${activeMaterial.massGrams} g)`}
@@ -371,10 +380,6 @@ export default function SimulationPage() {
                   <div className="text-[11px] text-muted-foreground mt-0.5">{preset.description}</div>
                 </button>
               ))}
-              <p className="text-[10px] text-muted-foreground">
-                Changing material resets the run — panel mass feeds inertia and CoM, so a
-                trajectory computed with another mass is not reusable.
-              </p>
             </CardContent>
           </Card>
 
@@ -487,7 +492,7 @@ export default function SimulationPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-[10px] text-muted-foreground">
-                Body angular rate at t=0, applied about Z. Presets from flown / literature CubeSat rates.
+                Body angular rate at t=0, applied about Z.
               </p>
               <div className="space-y-1.5">
                 {TUMBLE_PRESETS.map(preset => {

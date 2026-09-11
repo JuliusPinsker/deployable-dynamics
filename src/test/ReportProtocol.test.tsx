@@ -24,7 +24,6 @@ const ROW = {
   material: 'fr4' as const,
   panelMass: 0.032,
   finalAngleDeg: 90,
-  finalOmegaDegPerS: 2,
   averageRequiredDetumblingTorqueNm: 4e-7,
   deployTimeS: 1.25,
   peakOmegaDegPerS: 2,
@@ -86,7 +85,7 @@ describe('buildProtocolLines', () => {
     expect(byLabel['Fixed physics time step']).toContain('1/1200 s');
     expect(byLabel['Configurations']).toContain('4 panel configurations');
     expect(byLabel['Material presets']).toContain('3 presets');
-    expect(byLabel['Failure modes']).toMatch(/Topology-valid/);
+    expect(byLabel['Failure modes']).toMatch(/Configuration-valid/);
     expect(byLabel['Failure modes']).toMatch(/not long-edge/);
     expect(byLabel['Unfiltered matrix']).toContain('42-scenario sweep');
   });

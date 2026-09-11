@@ -80,7 +80,7 @@ vi.mock('@/lib/physics/engine', async () => {
         panelAngles: [0, 0],
         angularVelocity: { x: 0, y: 0, z: 0, length: () => 0 },
         angularAcceleration: { x: 0, y: 0, z: 0 },
-        totalContactForce: 0,
+        totalContactTorque: 0,
         detumbleAngularMomentum: 0,
       },
     ],
@@ -102,7 +102,6 @@ vi.mock('@/lib/physics/reportData', async () => {
         material,
         panelMass: 0.032,
         finalAngleDeg: 90,
-        finalOmegaDegPerS: 1,
         averageRequiredDetumblingTorqueNm: 1e-7,
         deployTimeS: 1.2,
         peakOmegaDegPerS: 1,
@@ -204,7 +203,7 @@ describe('scenario persistence across pages', () => {
     expect(screen.getByRole('radio', { name: /CFRP/i })).toHaveAttribute('aria-checked', 'true');
     expect((screen.getByLabelText('Timing Discrepancy δt') as HTMLInputElement).value).toBe('5');
     expect(screen.getByRole('button', { name: 'ms' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('2 Adjacent Stuck — CoM Offset')).toBeInTheDocument();
+    expect(screen.getByText('2 Adjacent Stuck — Asymmetric release')).toBeInTheDocument();
   });
 
   it('carries the active scenario on every header link, on every page', async () => {
@@ -230,7 +229,7 @@ describe('scenario persistence across pages', () => {
     renderApp('/simulate?config=long-edge&failure=two-adjacent');
 
     expect(scenarioFromUrl().failure).toBe('nominal');
-    expect(screen.queryByText('2 Adjacent Stuck — CoM Offset')).not.toBeInTheDocument();
+    expect(screen.queryByText('2 Adjacent Stuck — Asymmetric release')).not.toBeInTheDocument();
   });
 
   it('offers long-edge no two-panel failure modes on Simulation, Compare, or Report', async () => {

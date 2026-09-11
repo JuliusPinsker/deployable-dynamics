@@ -142,7 +142,7 @@ describe('Bistable tape-spring hinge — simulation integration', () => {
   });
 
   it('linear hinge model still works (backward compatibility)', () => {
-    // The calibrated lightly damped default hinge (ζ ≈ 0.30) crosses 95% of the
+    // The calibrated underdamped default hinge (ζ ≈ 0.80) crosses 95% of the
     // stop at ~1.6 s — a dynamics outcome; the horizon comfortably covers it.
     const frames = runFullSimulation('long-edge', DEFAULT_PARAMS, 8);
     expect(frames.length).toBeGreaterThan(0);

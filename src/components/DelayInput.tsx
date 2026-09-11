@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { Label } from '@/components/ui/label';
-import { DEFAULT_PARAMS } from '@/lib/physics/types';
 import {
   DELAY_PRESETS,
   DELAY_UNITS,
@@ -40,7 +39,6 @@ export default function DelayInput({ delaySeconds, onChange, className }: DelayI
   }, [delaySeconds]);
 
   const magnitude = scaleTo(delaySeconds, unit);
-  const timeStepMs = (DEFAULT_PARAMS.timeStep * 1000).toFixed(2);
 
   return (
     <div className={className ?? 'space-y-2'}>
@@ -85,18 +83,18 @@ export default function DelayInput({ delaySeconds, onChange, className }: DelayI
           <button
             key={preset.label}
             type="button"
-            onClick={() => onChange(preset.seconds)}
+            onClick={() => {
+              // Presets carry a natural unit (0 ns / 250 µs / 5 ms) — jump the toggle straight
+              // there instead of leaving it on whatever unit was previously active.
+              setUnit(deriveDelayDisplay(preset.seconds).unit);
+              onChange(preset.seconds);
+            }}
             className="rounded-md border border-border bg-secondary/50 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground hover:bg-secondary"
           >
             {preset.label}
           </button>
         ))}
       </div>
-      <p className="text-[10px] text-muted-foreground">
-        Panel i releases at i·δt. Timing resolution = the fixed physics timestep of {timeStepMs} ms
-        (1/1200 s): release times snap to the next step boundary, so a 5 ms δt is honoured to within
-        one step, while sub-{timeStepMs} ms values quantise to zero.
-      </p>
     </div>
   );
 }

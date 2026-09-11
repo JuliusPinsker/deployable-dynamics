@@ -105,7 +105,7 @@ export interface HingeCandidateMetrics {
   maxMomentumDriftAbs: number;
   /** Max relative |ΔH|/|H₀| when |H₀| > 1e-12, else 0. */
   maxMomentumDriftRel: number;
-  /** Whether any mechanical-stop contact occurred (contactForce > 0). */
+  /** Whether any mechanical-stop contact occurred (contactTorque > 0). */
   stopContact: boolean;
   /** Max overshoot past the stop angle (rad), from stop penetration. */
   maxOvershootRad: number;
@@ -207,7 +207,7 @@ export function evaluateHingeCandidate(
       }
       peakPanelRate = Math.max(peakPanelRate, Math.abs(panel.angularVelocity));
       peakHingeTorque = Math.max(peakHingeTorque, Math.abs(panel.hingeTorque));
-      if (panel.contactForce > 0) {
+      if (panel.contactTorque > 0) {
         stopContact = true;
         if (Number.isNaN(firstContactT)) firstContactT = state.time;
       }

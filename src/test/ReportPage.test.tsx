@@ -82,7 +82,7 @@ describe('ReportPage', () => {
     expect(text).not.toMatch(/Methodology & limitations/i);
     expect(text).not.toMatch(/N·m·s(?!\/rad)/);
     expect(text).not.toMatch(/angular momentum to remove/i);
-    expect(text).not.toMatch(/mJ|E_detumble|F_detumble|force required|LED|peak torque/i);
+    expect(text).not.toMatch(/mJ|E_detumble|F_detumble|force required|\bLED\b|peak torque/i);
   }, 90000);
 
   it('exports the report to PDF using τ_avg,detumble, defined once', async () => {
@@ -122,10 +122,10 @@ describe('ReportPage', () => {
     expect(pdfText).not.toMatch(/Method note:/i);
     expect(pdfText).not.toMatch(/N·m·s(?!\/rad)/);
     expect(pdfText).not.toMatch(/angular momentum to remove/i);
-    expect(pdfText).not.toMatch(/mJ|E_detumble|F_detumble|LED|peak torque/i);
+    expect(pdfText).not.toMatch(/mJ|E_detumble|F_detumble|\bLED\b|peak torque/i);
   }, 90000);
 
-  it('displays the coupled configuration as "short-edge with long-edge coupling" and never as the raw config id', async () => {
+  it('displays the coupled configuration as "Coupled" and never as the raw config id', async () => {
     render(<WrappedReportPage />);
 
     await waitFor(
@@ -135,7 +135,7 @@ describe('ReportPage', () => {
       { timeout: 80000 },
     );
 
-    expect(screen.getAllByText('short-edge with long-edge coupling').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Coupled').length).toBeGreaterThan(0);
     expect(screen.queryByText('short-edge-long-edge')).not.toBeInTheDocument();
   }, 90000);
 
@@ -175,7 +175,7 @@ describe('ReportPage', () => {
     // Narrow the Configuration filter down to long-edge only.
     fireEvent.click(screen.getByLabelText('double-long-edge'));
     fireEvent.click(screen.getByLabelText('short-edge'));
-    fireEvent.click(screen.getByLabelText('short-edge with long-edge coupling'));
+    fireEvent.click(screen.getByLabelText('Coupled'));
 
     // The now-inapplicable failure-mode checkboxes disappear entirely — a hidden/invalid
     // selection must never silently zero out the visible rows.
@@ -219,7 +219,7 @@ describe('ReportPage', () => {
       expect(validFailureLabels).toContain(failureMode);
     }
 
-    expect(body.some(([config]) => config === 'short-edge with long-edge coupling')).toBe(true);
+    expect(body.some(([config]) => config === 'Coupled')).toBe(true);
     expect(body.some(([config]) => config === 'short-edge-long-edge')).toBe(false);
   }, 90000);
 
@@ -279,13 +279,14 @@ describe('ReportPage', () => {
       { timeout: 80000 },
     );
 
-    expect(screen.getByRole('columnheader', { name: 'Final θ (deg)' })).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: 'Final ω (deg/s)' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Final θ (°)' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 't₉₀ (s)' })).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: 'Peak ω (deg/s)' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Peak ω (°/s)' })).toBeInTheDocument();
 
     const headerText = screen.getAllByRole('columnheader').map((th) => th.textContent);
     expect(headerText).not.toContain('theta_final (deg)');
+    // "Final ω (°/s)" was removed entirely — it was a byte-identical alias of "Peak ω (°/s)".
+    expect(headerText).not.toContain('Final ω (°/s)');
     expect(headerText).not.toContain('w_final (deg/s)');
     expect(headerText).not.toContain('t_deploy,90 (s)');
     expect(headerText).not.toContain('w_peak (deg/s)');
@@ -304,7 +305,7 @@ describe('ReportPage', () => {
     // Narrow to a single 4-failure-mode config so the expected row order is unambiguous.
     fireEvent.click(screen.getByLabelText('long-edge'));
     fireEvent.click(screen.getByLabelText('short-edge'));
-    fireEvent.click(screen.getByLabelText('short-edge with long-edge coupling'));
+    fireEvent.click(screen.getByLabelText('Coupled'));
 
     await waitFor(() => {
       expect(screen.getAllByTestId('report-row')).toHaveLength(12);

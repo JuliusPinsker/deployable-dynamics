@@ -48,7 +48,7 @@ export function buildProtocolLines(input: ProtocolInput): ProtocolLine[] {
     },
     {
       label: 'Configurations',
-      value: `${PROTOCOL_CONFIG_COUNT} panel configurations (long-edge, double-long-edge, short-edge, short-edge with long-edge coupling)`,
+      value: `${PROTOCOL_CONFIG_COUNT} panel configurations (long-edge, double-long-edge, short-edge, Coupled)`,
     },
     {
       label: 'Material presets',
@@ -57,7 +57,7 @@ export function buildProtocolLines(input: ProtocolInput): ProtocolLine[] {
     {
       label: 'Failure modes',
       value:
-        'Topology-valid only: one-stuck and all-stuck for every configuration; two-adjacent and '
+        'Configuration-valid only: one-stuck and all-stuck for every configuration; two-adjacent and '
         + 'two-opposite only where a distinct panel pair exists (not long-edge)',
     },
     {

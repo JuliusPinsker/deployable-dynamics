@@ -21,7 +21,6 @@ const ROW_A: ReportRow = {
   material: 'fr4',
   panelMass: 0.032,
   finalAngleDeg: 90,
-  finalOmegaDegPerS: 50,
   peakOmegaDegPerS: 100, // HIGHER peak ω
   averageRequiredDetumblingTorqueNm: 1e-8, // LOWER torque
   deployTimeS: 1.2,
@@ -34,7 +33,6 @@ const ROW_B: ReportRow = {
   material: 'cfrp',
   panelMass: 0.02,
   finalAngleDeg: 88,
-  finalOmegaDegPerS: 8,
   peakOmegaDegPerS: 10, // LOWER peak ω
   averageRequiredDetumblingTorqueNm: 5e-7, // HIGHER torque
   deployTimeS: 1.5,

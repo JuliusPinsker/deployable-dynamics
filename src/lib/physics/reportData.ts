@@ -52,7 +52,6 @@ export interface ReportRow {
   material: PanelMaterial;
   panelMass: number;
   finalAngleDeg: number;
-  finalOmegaDegPerS: number;
   /**
    * The one reported detumbling figure (N·m): the trajectory-maximum internal body
    * angular momentum divided by the assumed 5400 s allocation. An ADCS sizing
@@ -124,8 +123,7 @@ export function computeSingleRow(
       state.detumbleAngularMomentum,
     );
   }
-  const finalOmegaDegPerS = MathUtils.radToDeg(peak.peakOmegaRad);
-  const peakOmegaDegPerS = finalOmegaDegPerS;
+  const peakOmegaDegPerS = MathUtils.radToDeg(peak.peakOmegaRad);
 
   // The reported ADCS sizing value — that independent maximum spread over the assumed
   // 5400 s (one-orbit) recovery allocation. Never differenced from adjacent samples.
@@ -153,7 +151,6 @@ export function computeSingleRow(
     material,
     panelMass,
     finalAngleDeg,
-    finalOmegaDegPerS,
     averageRequiredDetumblingTorqueNm,
     deployTimeS,
     peakOmegaDegPerS,

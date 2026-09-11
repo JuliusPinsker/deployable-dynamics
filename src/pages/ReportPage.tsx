@@ -57,7 +57,7 @@ function parseFilterParam<T extends string>(
 // Only the coupled config's raw id needs a friendlier phrase; the internal identifier
 // 'short-edge-long-edge' is unchanged everywhere else (routing, physics, other configs).
 const configLabels: Partial<Record<SimulationConfig, string>> = {
-  'short-edge-long-edge': 'short-edge with long-edge coupling',
+  'short-edge-long-edge': 'Coupled',
 };
 
 // Display-only "-stuck" suffix for the two-panel modes; internal values stay
@@ -68,24 +68,25 @@ const failureModeLabels: Record<FailureMode, string> = FAILURE_MODE_REPORT_LABEL
 // Reader-facing column labels for the on-screen table — Greek symbols paired with a
 // plain-English qualifier (matching ComparePage's "Peak ω (°/s)" convention) and the
 // site-wide t₉₀ notation (matching this same page's Summary Statistics card), instead
-// of internal-identifier-style names like "theta_final"/"w_final"/"t_deploy,90".
+// of internal-identifier-style names like "theta_final"/"t_deploy,90".
 // τ_avg,detumble is unchanged — it is already reader-facing and pinned by
 // detumblingTerminology.test.ts / ReportPage.test.tsx's terminology tests.
 const screenColumnLabels = {
-  finalAngle: 'Final θ (deg)',
-  finalOmega: 'Final ω (deg/s)',
+  finalAngle: 'Final θ (°)',
   deployTime: 't₉₀ (s)',
-  peakOmega: 'Peak ω (deg/s)',
+  peakOmega: 'Peak ω (°/s)',
 };
 
 // PDF-safe equivalents: jsPDF's standard fonts cannot render τ, θ, ω, or subscript
 // digits, so these spell the same reader-facing labels in ASCII (matching the
 // existing "tau_avg,detumble" precedent already used for the pinned torque column).
+// The degree glyph (°) is a standard WinAnsi/Latin-1 character (same class as the
+// "·" already used in "N·m" below), so it renders fine and is kept — only the
+// Greek letter names are spelled out.
 const pdfColumnLabels = {
-  finalAngle: 'Final theta (deg)',
-  finalOmega: 'Final omega (deg/s)',
+  finalAngle: 'Final theta (°)',
   deployTime: 't90 (s)',
-  peakOmega: 'Peak omega (deg/s)',
+  peakOmega: 'Peak omega (°/s)',
 };
 
 // Display-only ordering for the Scenario Results table and PDF export: grouped by
@@ -381,7 +382,6 @@ export function ReportPage() {
       materialLabels[row.material] ?? row.material,
       row.panelMass.toFixed(3),
       row.finalAngleDeg.toFixed(2),
-      row.finalOmegaDegPerS.toFixed(2),
       formatTorqueNm(row.averageRequiredDetumblingTorqueNm),
       row.deployTimeS.toFixed(3),
       row.peakOmegaDegPerS.toFixed(2),
@@ -395,7 +395,6 @@ export function ReportPage() {
         'Material',
         'Mass (kg)',
         pdfColumnLabels.finalAngle,
-        pdfColumnLabels.finalOmega,
         'tau_avg,detumble (N·m)',
         pdfColumnLabels.deployTime,
         pdfColumnLabels.peakOmega,
@@ -495,12 +494,8 @@ export function ReportPage() {
             <span data-testid="active-scenario-dt">δt: {formatDelay(delaySeconds)}</span>
           </div>
           <p className="text-xs text-muted-foreground">
-            Configuration, material, and failure mode are carried through this page&apos;s URL so
-            navigation between Simulation, Compare, and Report is continuous. They do{' '}
-            <strong>not</strong> restrict the {allRows?.length ?? 42}-scenario matrix — only the
-            report matrix filters below determine which rows are displayed. The active timing
-            discrepancy δt <strong>does</strong> apply globally: every report row is computed at
-            δt = {formatDelay(delaySeconds)}.
+            The active timing discrepancy δt <strong>does</strong> apply globally: every report
+            row is computed at δt = {formatDelay(delaySeconds)}.
           </p>
         </CardContent>
       </Card>
@@ -672,7 +667,6 @@ export function ReportPage() {
                   <th className="text-left py-2 pr-4">Material</th>
                   <th className="text-right py-2 pr-4">Mass (kg)</th>
                   <th className="text-right py-2 pr-4">{screenColumnLabels.finalAngle}</th>
-                  <th className="text-right py-2 pr-4">{screenColumnLabels.finalOmega}</th>
                   <th className="text-right py-2 pr-4">τ_avg,detumble (N·m)</th>
                   <th className="text-right py-2 pr-4">{screenColumnLabels.deployTime}</th>
                   <th className="text-right py-2">{screenColumnLabels.peakOmega}</th>
@@ -686,7 +680,6 @@ export function ReportPage() {
                     <td className="py-2 pr-4">{materialLabels[row.material] ?? row.material}</td>
                     <td className="py-2 pr-4 text-right">{formatNumber(row.panelMass, 3)}</td>
                     <td className="py-2 pr-4 text-right">{formatNumber(row.finalAngleDeg, 2)}</td>
-                    <td className="py-2 pr-4 text-right">{formatNumber(row.finalOmegaDegPerS, 2)}</td>
                     <td className="py-2 pr-4 text-right">
                       {formatTorqueNm(row.averageRequiredDetumblingTorqueNm)}
                     </td>

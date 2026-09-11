@@ -22,6 +22,7 @@ import {
   FREE_FLOAT_MOMENTUM_ERROR_MAX,
 } from '../lib/physics/engine';
 import { DEFAULT_PARAMS, CONFIGURATIONS, type ConfigType, type SimulationParams } from '../lib/physics/types';
+import { isFailureModeValid, TWO_PANEL_TOPOLOGY } from '../lib/scenario/scenarioSpec';
 
 const CONFIGS: ConfigType[] = ['long-edge', 'double-long-edge', 'short-edge', 'short-edge-long-edge'];
 
@@ -37,11 +38,13 @@ const MAX_TIME: Record<ConfigType, number> = {
 };
 
 /** Stuck-panel index mapping, mirroring reportData/ComparePage conventions. */
-function stuckFor(config: ConfigType, mode: 'none' | 'one-stuck' | 'two-opposite' | 'all-stuck'): number[] {
+function stuckFor(config: ConfigType, mode: 'none' | 'one-stuck' | 'two-adjacent' | 'two-opposite' | 'all-stuck'): number[] {
   const count = CONFIGURATIONS.find(c => c.id === config)!.panelCount;
   switch (mode) {
     case 'none': return [];
     case 'one-stuck': return [0];
+    case 'two-adjacent':
+      return TWO_PANEL_TOPOLOGY[config]?.adjacent ?? [];
     case 'two-opposite':
       return config === 'long-edge' || config === 'double-long-edge' ? [0, 1] : [0, 2];
     case 'all-stuck': return Array.from({ length: count }, (_, i) => i);
@@ -123,7 +126,10 @@ describe('physics invariants (free float, L_B = 0 exactly)', () => {
 
 describe('scenario coverage: every configuration × failure mode, spinning, 0.1% momentum criterion', () => {
   for (const config of CONFIGS) {
-    for (const mode of ['none', 'one-stuck', 'two-opposite', 'all-stuck'] as const) {
+    for (const mode of ['none', 'one-stuck', 'two-adjacent', 'two-opposite', 'all-stuck'] as const) {
+      // two-adjacent has no distinct panel pair on long-edge (2 panels only) — skip via the
+      // codebase's own validity resolver rather than fabricating stuck indices for it.
+      if (mode === 'two-adjacent' && !isFailureModeValid(config, mode)) continue;
       it(`${config} / ${mode}: finite, momentum ≤ ${(FREE_FLOAT_MOMENTUM_ERROR_MAX * 100).toFixed(1)}%, correct deployment outcome`, () => {
         const stuck = stuckFor(config, mode);
         const frames = runFullSimulation(

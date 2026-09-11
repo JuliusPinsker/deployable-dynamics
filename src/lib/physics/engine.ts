@@ -5,7 +5,7 @@
 //  • Full 3×3 inertia tensors (diagonal in body frame, rotated to world each step)
 //  • Euler's rotational equation with gyroscopic coupling: I·α = τ − ω×(I·ω)
 //  • 1-DOF hinge constraint per panel (spring-damper + mechanical stop)
-//  • Semi-implicit Euler integration (velocity-first)
+//  • Classical fourth-order Runge-Kutta integration
 //  • Angular momentum conserving internal hinge torques
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -244,7 +244,8 @@ export function accumulateOmegaPeak(
  *   local Z = outward/deploy        (extent R = spec.size[2]; panel occupies
  *                                    Z ∈ [-R, 0], hinge edge line at Z = 0)
  *
- * In the Bascom–Schaub (AAS 22-725) panel-frame naming (ŝ2 = hinge axis,
+ * In the Bascom, G. & Schaub, H. (2022), Modular Dynamic Modeling of Hinged
+ * Solar Panel Deployments, AAS 22-725, panel-frame naming (ŝ2 = hinge axis,
  * ŝ1 along the CM–hinge line, ŝ3 completing the right-handed set):
  *
  *   Ixx = I_S2 = (1/12) m (t² + R²)   ← about the hinge-parallel axis THROUGH THE CM
@@ -265,6 +266,10 @@ function panelInertiaCentroidDiag(m: number, H: number, t: number, R: number): V
  * CM sits at local (0, 0, −R/2), i.e. offset d = R/2 from the hinge line
  * purely along local Z, so the shift m·(R/2)² applies to the X and Y moments
  * and leaves Z unchanged:
+ *
+ * Parallel-axis theorem reference:
+ *   Peraire, J. & Widnall, S. (2008). Lecture L26 — 3D Rigid Body Dynamics:
+ *   The Inertia Tensor, 16.07 Dynamics, MIT OpenCourseWare, p. 7.
  *
  *   Ixx = (1/12) m (t² + R²) + m (R/2)² = (1/3) m R² + (1/12) m t²   ← hinge axis (Ieff = I_S2 + m·d²)
  *   Iyy = (1/12) m (H² + R²) + m (R/2)² = (1/12) m H² + (1/3) m R²
@@ -864,8 +869,13 @@ export function integrateCoupledSystemRK4(
  * standard approach for externally driven systems.
  *
  * Quaternion kinematic equation reference:
- *   Wertz, J. R. (1978). *Spacecraft Attitude Determination and Control*,
- *   Kluwer Academic Publishers, §16.1.
+ *   Blanke, M. & Larsen, M. B. (2010). Satellite Dynamics and Control in a
+ *   Quaternion Formulation, 2nd ed., Technical University of Denmark, Eq. (3.10).
+ *
+ * Euler's rotational equation reference:
+ *   Blanke, M. & Larsen, M. B. (2010). Satellite Dynamics and Control in a
+ *   Quaternion Formulation, 2nd ed., Technical University of Denmark, Eq. (3.4).
+ *   Reaction-wheel momentum terms vanish here — this is a wheel-free model.
  *
  * RK4 error characteristics reference:
  *   Shampine, L. F. & Reichelt, M. W. (1997). "The MATLAB ODE Suite",
@@ -900,7 +910,8 @@ export function integrateBodyRK4(
     const dq = new Quaternion(0.5 * qDot.x, 0.5 * qDot.y, 0.5 * qDot.z, 0.5 * qDot.w);
 
     // Euler's equation: I·α = τ - ω×(I·ω)
-    // Compute gyroscopic term in world frame via body frame
+    // Compute gyroscopic term in world frame via body frame — body-frame
+    // rotation a_S = A_SI(q) a_I (Blanke & Larsen 2010, Eq. (3.2)).
     const omegaBody = omegaSafe.clone().applyQuaternion(qSafe.clone().conjugate());
     const IomegaBody = applyInertia(Ib, omegaBody);
     const IomegaWorld = IomegaBody.clone().applyQuaternion(qSafe.clone());
@@ -968,7 +979,9 @@ export function integrateBodyRK4(
 /**
  * Total system angular momentum about body reference point B, world frame.
  *
- * Exact rigid-multibody decomposition (Hughes 1986, Ch. 3), per panel j:
+ * Exact rigid-multibody decomposition (Bascom, G. & Schaub, H. (2022),
+ * Modular Dynamic Modeling of Hinged Solar Panel Deployments, AAS 22-725,
+ * Eq. (4), generalised here to n panels), per panel j:
  *
  *   H_j = M_j · ω_p,j + m · r_j × v_j
  *
@@ -1151,7 +1164,7 @@ function createInitialPanels(config: ConfigType): PanelState[] {
     stuck: false,
     stuckAngle: 0,
     deployed: false,
-    contactForce: 0,
+    contactTorque: 0,
     hingeTorque: 0,
     _q: new Quaternion(),
     _omega: new Vector3(0, 0, 0),
@@ -1438,11 +1451,11 @@ export function stepSimulation(
     // Telemetry at the final state: hinge torque and stop-contact magnitude
     // from the same single torque law the integrator uses (0 when inactive).
     let hingeTorque = 0;
-    let contactForce = 0;
+    let contactTorque = 0;
     if (active[i] && !deployedFinal[i]) {
       const t = hingeTorqueTotal(thetaFinal[i], thetaDotFinal[i], stopAngles[i], h);
       hingeTorque = t.tau;
-      contactForce = t.contact;
+      contactTorque = t.contact;
     }
 
     // Panel world angular velocity via the hinge chain (a rider inherits its
@@ -1459,7 +1472,7 @@ export function stepSimulation(
       angle: thetaFinal[i],
       angularVelocity: thetaDotFinal[i],
       deployed: deployedFinal[i],
-      contactForce,
+      contactTorque,
       hingeTorque,
       _q: geoFinal[i].qPanelWorld,
       _omega: omegaPanelNew,
@@ -1511,8 +1524,8 @@ export interface SimulationFrame {
   angularVelocity: Vector3;
   angularAcceleration: Vector3;
   panelAngles: number[];
-  contactForces: number[];
-  totalContactForce: number;
+  contactTorques: number[];
+  totalContactTorque: number;
   /** Relative angular momentum error |H - H₀| / |H₀| (dimensionless). 0 when H₀ ≈ 0. */
   momentumError: number;
   /**
@@ -1534,8 +1547,9 @@ export interface SimulationFrame {
    * It does not represent electrical energy consumption or a unique torque;
    * torque depends on the selected detumbling duration and control law.
    *
-   * Reference: Hughes, P. C. (1986). Spacecraft Attitude Dynamics.
-   * Wiley, Chapter 4 — angular momentum of a rigid body.
+   * Reference: Peraire, J. & Widnall, S. (2008). Lecture L26 — 3D Rigid Body
+   * Dynamics: The Inertia Tensor, 16.07 Dynamics, MIT OpenCourseWare,
+   * Eq. (6): H_G = [I_G]ω.
    *
    * Units: N·m·s (= kg·m²/s)
    */
@@ -1622,8 +1636,8 @@ export function runFullSimulation(
         angularVelocity: state.angularVelocity.clone(),
         angularAcceleration: state.angularAcceleration.clone(),
         panelAngles: state.panels.map(p => p.angle),
-        contactForces: state.panels.map(p => p.contactForce),
-        totalContactForce: state.panels.reduce((s, p) => s + p.contactForce, 0),
+        contactTorques: state.panels.map(p => p.contactTorque),
+        totalContactTorque: state.panels.reduce((s, p) => s + p.contactTorque, 0),
         momentumError,
         attitudeCouplingDeg,
         // Stored raw: deployment transients sit at ~1e-5 … 1e-2 N·m·s, so any
