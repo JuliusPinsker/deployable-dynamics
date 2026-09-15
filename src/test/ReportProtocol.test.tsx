@@ -38,6 +38,8 @@ vi.mock('jspdf', () => {
     line: vi.fn(),
     autoTable: vi.fn(),
     save: vi.fn(),
+    addPage: vi.fn(),
+    splitTextToSize: vi.fn((text: string) => [text]),
     internal: { pageSize: { getWidth: () => 210, getHeight: () => 297 } },
     lastAutoTable: { finalY: 100 },
   };
@@ -77,8 +79,8 @@ describe('buildProtocolLines', () => {
     const lines = buildProtocolLines(PROTOCOL_INPUT);
     const byLabel = Object.fromEntries(lines.map(line => [line.label, line.value]));
 
-    expect(byLabel['Timing discrepancy δt']).toContain('5 ms');
-    expect(byLabel['Timing discrepancy δt']).toContain('0.005 s');
+    expect(byLabel['Timing discrepancy Δt']).toContain('5 ms');
+    expect(byLabel['Timing discrepancy Δt']).toContain('0.005 s');
     expect(byLabel['Fixed physics time step']).toContain(
       `${(DEFAULT_PARAMS.timeStep * 1000).toFixed(2)} ms`,
     );
@@ -114,7 +116,7 @@ describe('protocolToPdfLines', () => {
     for (const line of pdfLines) {
       expect(line).not.toMatch(/[δτθω₉₀]/);
     }
-    expect(pdfLines.some(line => line.startsWith('Timing discrepancy dt:'))).toBe(true);
+    expect(pdfLines.some(line => line.startsWith('Timing discrepancy Delta t:'))).toBe(true);
   });
 });
 

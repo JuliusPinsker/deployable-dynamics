@@ -43,7 +43,7 @@ export default function DelayInput({ delaySeconds, onChange, className }: DelayI
   return (
     <div className={className ?? 'space-y-2'}>
       <Label className="text-xs text-muted-foreground" htmlFor="delay-magnitude">
-        Timing Discrepancy δt
+        Timing Discrepancy Δt
       </Label>
       <div className="flex items-center gap-2">
         <input

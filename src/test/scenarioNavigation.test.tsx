@@ -201,7 +201,7 @@ describe('scenario persistence across pages', () => {
     });
     // …and the controls reflect every one of those values.
     expect(screen.getByRole('radio', { name: /CFRP/i })).toHaveAttribute('aria-checked', 'true');
-    expect((screen.getByLabelText('Timing Discrepancy δt') as HTMLInputElement).value).toBe('5');
+    expect((screen.getByLabelText('Timing Discrepancy Δt') as HTMLInputElement).value).toBe('5');
     expect(screen.getByRole('button', { name: 'ms' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText('2 Adjacent Stuck — Asymmetric release')).toBeInTheDocument();
   });

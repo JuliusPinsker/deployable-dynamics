@@ -298,7 +298,7 @@ export default function ComparePage() {
             <h1 className="text-2xl font-bold">Configuration Comparison</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Quantitative comparison of deployment dynamics across all 4 configurations —
-              computed for ONE selected panel material at a time, under the same δt and failure
+              computed for ONE selected panel material at a time, under the same Δt and failure
               mode. The reference configuration is highlighted as the {ACTIVE_SCENARIO_LABEL}; it
               never removes the other configurations.
             </p>

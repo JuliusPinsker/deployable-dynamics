@@ -353,21 +353,24 @@ export function ReportPage() {
 
     doc.setFontSize(9);
     doc.setFont('helvetica', 'italic');
-    doc.text(
+    // maxWidth keeps these paragraphs inside the landscape page margin (matching the
+    // protocol lines above, which wrap the same way); splitTextToSize gives the actual
+    // line count so the next element is never placed on top of a wrapped line.
+    const noteLine1 = doc.splitTextToSize(
       'tau_avg,detumble denotes the average required detumbling torque. '
         + `tau_avg,detumble = H_remove,max / ${DETUMBLING_TIME_REQUIREMENT_S} s. Unit: N·m.`,
-      14,
-      y,
+      269,
     );
-    y += 6;
-    doc.text(
+    doc.text(noteLine1, 14, y);
+    y += noteLine1.length * 5 + 1;
+    const noteLine2 = doc.splitTextToSize(
       'This value equals the maximum deployment-induced body angular momentum divided by an '
         + 'assumed 5,400 s one-orbit LEO detumbling allocation. It is an average ADCS sizing '
         + 'requirement, not a simulated actuator torque.',
-      14,
-      y,
+      269,
     );
-    y += 10;
+    doc.text(noteLine2, 14, y);
+    y += noteLine2.length * 5 + 5;
 
     doc.setDrawColor(180);
     doc.line(14, y, 283, y);
@@ -386,6 +389,16 @@ export function ReportPage() {
       row.deployTimeS.toFixed(3),
       row.peakOmegaDegPerS.toFixed(2),
     ]);
+
+    // jspdf-autotable doesn't check remaining space before drawing a table's header, so a
+    // header placed too close to the bottom margin renders alone with no rows beneath it
+    // and the whole body repeats on the next page. Force the break ourselves so the header
+    // always lands with at least one data row under it.
+    const pageHeight = doc.internal.pageSize.getHeight();
+    if (pageHeight - y < 40) {
+      doc.addPage('a4', 'landscape');
+      y = 20;
+    }
 
     autoTable(doc, {
       startY: y,
@@ -408,10 +421,9 @@ export function ReportPage() {
         2: { cellWidth: 20 },
         3: { cellWidth: 18 },
         4: { cellWidth: 22 },
-        5: { cellWidth: 22 },
+        5: { cellWidth: 36 },
         6: { cellWidth: 34 },
         7: { cellWidth: 22 },
-        8: { cellWidth: 22 },
       },
     });
 
@@ -491,11 +503,11 @@ export function ReportPage() {
             <span data-testid="active-scenario-failure">
               Failure mode: {FAILURE_MODE_LABELS[scenario.failureMode].label}
             </span>
-            <span data-testid="active-scenario-dt">δt: {formatDelay(delaySeconds)}</span>
+            <span data-testid="active-scenario-dt">Δt: {formatDelay(delaySeconds)}</span>
           </div>
           <p className="text-xs text-muted-foreground">
-            The active timing discrepancy δt <strong>does</strong> apply globally: every report
-            row is computed at δt = {formatDelay(delaySeconds)}.
+            The active timing discrepancy Δt <strong>does</strong> apply globally: every report
+            row is computed at Δt = {formatDelay(delaySeconds)}.
           </p>
         </CardContent>
       </Card>

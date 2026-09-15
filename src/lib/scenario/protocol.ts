@@ -39,8 +39,8 @@ export function buildProtocolLines(input: ProtocolInput): ProtocolLine[] {
 
   return [
     {
-      label: 'Timing discrepancy δt',
-      value: `${formatDelay(input.delaySeconds)} (${input.delaySeconds} s) — panel i releases at i·δt`,
+      label: 'Timing discrepancy Δt',
+      value: `${formatDelay(input.delaySeconds)} (${input.delaySeconds} s) — panel i releases at i·Δt`,
     },
     {
       label: 'Fixed physics time step',
@@ -77,7 +77,7 @@ export function buildProtocolLines(input: ProtocolInput): ProtocolLine[] {
 
 /** Characters jsPDF's standard fonts cannot render, and their spelled-out equivalents. */
 const PDF_SUBSTITUTIONS: Array<[RegExp, string]> = [
-  [/δt/g, 'dt'],
+  [/Δt/g, 'Delta t'],
   [/τ/g, 'tau'],
   [/θ/g, 'theta'],
   [/ω/g, 'omega'],
